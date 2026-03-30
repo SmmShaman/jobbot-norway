@@ -49,7 +49,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
 def skyvern_headers() -> dict:
     """Build headers for Skyvern API (includes HF auth for private spaces)."""
-    headers = skyvern_headers()
+    headers = {"x-api-key": SKYVERN_API_KEY} if SKYVERN_API_KEY else {}
     if HF_TOKEN and "hf.space" in SKYVERN_URL:
         headers["Authorization"] = f"Bearer {HF_TOKEN}"
     return headers
