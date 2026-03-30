@@ -1297,12 +1297,17 @@ async def trigger_registration_flow(
         if password_answer and 'зареєструвати' not in password_answer.lower():
             # User provided a password — save and return
             try:
-                supabase.table("site_credentials").upsert({
+                upsert_data = {
                     "site_domain": domain,
                     "email": reg_email,
                     "password": password_answer.strip(),
                     "status": "active",
-                }, on_conflict="site_domain,email").execute()
+                }
+                if user_id:
+                    upsert_data["user_id"] = user_id
+                supabase.table("site_credentials").upsert(
+                    upsert_data, on_conflict="site_domain,email"
+                ).execute()
                 await log(f"💾 Saved credentials for {domain} from user")
                 await send_tech_telegram(chat_id,
                     f"✅ <b>Пароль збережено для {domain}!</b>\n"
