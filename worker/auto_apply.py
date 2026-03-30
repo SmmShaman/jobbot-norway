@@ -1821,23 +1821,33 @@ async def wait_for_extraction_task(task_id: str, max_wait: int = 300) -> dict:
                 )
 
                 if response.status_code == 200:
-                    data = response.json()
+                    raw = response.json()
+                    # Skyvern may return dict or wrapped response
+                    if isinstance(raw, list):
+                        data = raw[0] if raw else {}
+                    elif isinstance(raw, dict) and 'request' in raw:
+                        data = raw
+                    else:
+                        data = raw if isinstance(raw, dict) else {}
+
                     status = data.get('status', '')
 
                     if status == 'completed':
-                        extracted = data.get('extracted_information', {})
+                        extracted = data.get('extracted_information') or {}
+                        if isinstance(extracted, list):
+                            extracted = extracted[0] if extracted else {}
                         await log(f"✅ Extraction completed!")
 
-                        fields = extracted.get('form_fields', [])
+                        fields = extracted.get('form_fields', []) if isinstance(extracted, dict) else []
                         await log(f"   Found {len(fields)} form fields")
 
                         return {
                             "success": True,
                             "fields": fields,
-                            "form_title": extracted.get('form_title', ''),
-                            "form_url": extracted.get('current_url', ''),
-                            "requires_login": extracted.get('requires_login', False),
-                            "has_file_upload": extracted.get('has_file_upload', False),
+                            "form_title": extracted.get('form_title', '') if isinstance(extracted, dict) else '',
+                            "form_url": extracted.get('current_url', '') if isinstance(extracted, dict) else '',
+                            "requires_login": extracted.get('requires_login', False) if isinstance(extracted, dict) else False,
+                            "has_file_upload": extracted.get('has_file_upload', False) if isinstance(extracted, dict) else False,
                             "error": None
                         }
 
@@ -1845,6 +1855,16 @@ async def wait_for_extraction_task(task_id: str, max_wait: int = 300) -> dict:
                         error_msg = data.get('failure_reason', status)
                         await log(f"❌ Extraction failed: {error_msg}")
                         return {"success": False, "error": error_msg, "fields": []}
+
+                    elif not status:
+                        # Unknown response format — don't loop forever
+                        await log(f"⚠️ Unexpected extraction response format, retrying...")
+                        extraction_errors = getattr(wait_for_extraction_task, '_errors', 0) + 1
+                        wait_for_extraction_task._errors = extraction_errors
+                        if extraction_errors > 5:
+                            await log(f"❌ Too many extraction parse errors, aborting")
+                            return {"success": False, "error": "parse_error", "fields": []}
+                        await asyncio.sleep(3)
 
                     else:
                         # Still running
@@ -1854,6 +1874,11 @@ async def wait_for_extraction_task(task_id: str, max_wait: int = 300) -> dict:
 
             except Exception as e:
                 await log(f"⚠️ Error checking extraction status: {e}")
+                extraction_errors = getattr(wait_for_extraction_task, '_errors', 0) + 1
+                wait_for_extraction_task._errors = extraction_errors
+                if extraction_errors > 5:
+                    await log(f"❌ Too many extraction errors, aborting")
+                    return {"success": False, "error": str(e), "fields": []}
                 await asyncio.sleep(3)
 
 
