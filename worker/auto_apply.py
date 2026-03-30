@@ -1220,44 +1220,48 @@ async def trigger_registration_flow(
     user_id: str = None
 ) -> str | None:
     """
-    Wrapper for trigger_registration that also:
-    1. Asks user if they already have an account
-    2. If yes — saves credentials and returns None (caller proceeds with creds)
-    3. If no — triggers registration, sends Telegram notification, tracks flow
+    Credentials check and registration flow:
+    1. Check if login/password exists in DB for this domain
+    2. If YES → log "Found credentials", return None (caller proceeds with login)
+    3. If NO → ask user in Telegram: "No credentials found for X. Do you have an account?"
+       - User sends password → save credentials, return None (caller logs in)
+       - User says "No / Register" → start registration flow, return flow_id
+       - User says "Skip" → return None (proceed without creds)
 
-    Returns flow_id or None
+    Returns flow_id (registration started) or None (use existing creds or skip)
     """
-    await log(f"📝 Registration flow for {domain}")
+    await log(f"🔍 Перевіряю логін/пароль для {domain}...")
 
-    # Check if registration already in progress for this application
+    # Step 1: Check if credentials exist in DB
     try:
-        existing = supabase.table("registration_flows") \
-            .select("id, status") \
-            .eq("application_id", app_id) \
-            .in_("status", ["pending", "analyzing", "registering", "waiting_for_user",
-                            "email_verification", "sms_verification", "link_verification",
-                            "review_pending", "submitting"]) \
-            .limit(1).execute()
-        if existing.data:
-            flow_id = existing.data[0]['id']
-            await log(f"📝 Registration already in progress: {flow_id[:8]}")
-            return flow_id
-    except Exception as e:
-        await log(f"⚠️ Failed to check existing registration flows: {e}")
-
-    # Check if credentials already exist in DB — no need to ask user
-    try:
-        creds_resp = supabase.table("site_credentials") \
+        query = supabase.table("site_credentials") \
             .select("email, password, status") \
-            .eq("site_domain", domain).eq("status", "active").limit(1).execute()
+            .eq("site_domain", domain).eq("status", "active")
+        if user_id:
+            query = query.eq("user_id", user_id)
+        creds_resp = query.limit(1).execute()
+
+        # Also check without user_id filter (legacy records)
+        if not creds_resp.data:
+            creds_resp = supabase.table("site_credentials") \
+                .select("email, password, status") \
+                .eq("site_domain", domain).eq("status", "active") \
+                .limit(1).execute()
+
         if creds_resp.data:
-            await log(f"✅ Credentials found in DB for {domain} — skipping registration")
-            return None  # Caller will re-check credentials and proceed with login
+            cred = creds_resp.data[0]
+            await log(f"✅ Знайдено логін/пароль для {domain}: {cred['email']}")
+            if chat_id:
+                await send_tech_telegram(chat_id,
+                    f"🔐 <b>Знайдено логін/пароль для {domain}</b>\n"
+                    f"📧 {cred['email']}\n"
+                    f"⏳ Починаю авторизацію..."
+                )
+            return None  # Caller will use credentials for login
     except Exception as e:
         await log(f"⚠️ Failed to check credentials: {e}")
 
-    # No credentials in DB — ask user if they have a password before registering
-    # Get email that will be used for registration
+    # Step 2: No credentials — ask user in Telegram
     reg_email = None
     try:
         profile = await get_active_profile_full(user_id)
@@ -1272,29 +1276,39 @@ async def trigger_registration_flow(
             user_id=user_id,
             field_name=f"password_for_{domain}",
             question_text=(
-                f"🔐 В базі немає логіна для {domain}\n\n"
-                f"Якщо у вас є акаунт для email:\n"
-                f"📧 <code>{reg_email}</code>\n\n"
-                f"Надішліть пароль текстом.\n"
-                f"Або оберіть дію нижче:"
+                f"🔍 <b>В базі не знайдено логін та пароль для:</b>\n"
+                f"🌐 <code>{domain}</code>\n\n"
+                f"📧 Email: <code>{reg_email}</code>\n\n"
+                f"Якщо у вас є акаунт — надішліть пароль текстом.\n"
+                f"Якщо немає — оберіть дію нижче:"
             ),
             job_title=job_title,
             company=domain,
-            options=["Зареєструвати новий акаунт", "Пропустити"],
+            options=["Немає акаунту — зареєструвати", "Пропустити"],
             timeout_seconds=300,
             job_id=job_id
         )
 
         if not password_answer:
-            # Timeout
-            await log(f"⏰ Password question timeout for {domain}")
+            await log(f"⏰ Timeout — немає відповіді для {domain}")
             return None
 
         if 'пропустити' in password_answer.lower():
-            await log(f"⏭️ User skipped registration for {domain}")
+            await log(f"⏭️ Користувач пропустив {domain}")
             return None
 
-        if password_answer and 'зареєструвати' not in password_answer.lower():
+        # User says "no account" or "register" → start registration
+        if 'немає' in password_answer.lower() or 'зареєструвати' in password_answer.lower():
+            await log(f"📝 Користувач підтвердив: немає акаунту. Починаю реєстрацію на {domain}")
+            if chat_id:
+                await send_tech_telegram(chat_id,
+                    f"📝 <b>Починаю реєстрацію на {domain}</b>\n"
+                    f"📧 {reg_email}\n"
+                    f"⏳ Створюю акаунт з вашими даними..."
+                )
+            # Fall through to registration below
+
+        else:
             # User provided a password — save and return
             try:
                 upsert_data = {
@@ -1308,11 +1322,11 @@ async def trigger_registration_flow(
                 supabase.table("site_credentials").upsert(
                     upsert_data, on_conflict="site_domain,email"
                 ).execute()
-                await log(f"💾 Saved credentials for {domain} from user")
+                await log(f"💾 Пароль збережено для {domain}")
                 await send_tech_telegram(chat_id,
                     f"✅ <b>Пароль збережено для {domain}!</b>\n"
                     f"📧 {reg_email}\n"
-                    f"⏳ Заповнюю форму з авторизацією..."
+                    f"⏳ Починаю авторизацію..."
                 )
             except Exception as e:
                 await log(f"⚠️ Failed to save credentials: {e}")
