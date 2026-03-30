@@ -57,6 +57,32 @@ DEFAULT_EMAIL = os.getenv("DEFAULT_REGISTRATION_EMAIL", "")  # Email for registr
 
 # Timeouts
 QUESTION_TIMEOUT_SECONDS = 300  # 5 minutes
+
+
+async def get_resume_url_for_user(user_id: str, profile: dict = None) -> str:
+    """Get public resume URL from user's active profile source_files."""
+    try:
+        if not profile:
+            profile = await get_active_profile(user_id)
+        source_files = (profile or {}).get('source_files', []) or []
+        if not source_files:
+            return ""
+        structured = (profile or {}).get('structured_content', {}) or {}
+        user_name = (structured.get('personalInfo', {}) or {}).get('fullName', '')
+        # Priority: file matching user's name
+        for sf in source_files:
+            if sf and user_name and user_name.lower().split()[0] in sf.lower():
+                return f"{SUPABASE_URL}/storage/v1/object/public/resumes/{sf}"
+        # Fallback: any file with 'cv' in name
+        for sf in source_files:
+            if sf and 'cv' in sf.lower():
+                return f"{SUPABASE_URL}/storage/v1/object/public/resumes/{sf}"
+        # Last resort: first file
+        if source_files[0]:
+            return f"{SUPABASE_URL}/storage/v1/object/public/resumes/{source_files[0]}"
+    except Exception:
+        pass
+    return ""
 VERIFICATION_TIMEOUT_SECONDS = 300  # 5 minutes
 
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -1074,7 +1100,8 @@ async def trigger_registration_task(
     registration_url: str,
     profile_data: dict,
     email: str,
-    password: str
+    password: str,
+    resume_url: str = None
 ) -> str | None:
     """Start Skyvern registration task.
 
@@ -1122,21 +1149,25 @@ async def trigger_registration_task(
         }
     }
 
+    nav_payload = {
+        **profile_data,
+        "email": email,
+        "password": password,
+        "confirm_password": password
+    }
+    if resume_url:
+        nav_payload["resume_url"] = resume_url
+
     payload = {
         "url": registration_url,
         "navigation_goal": navigation_goal,
-        "navigation_payload": {
-            **profile_data,
-            "email": email,
-            "password": password,
-            "confirm_password": password
-        },
+        "navigation_payload": nav_payload,
         "data_extraction_goal": "Determine registration status, any verification needs, and fields that were filled.",
         "data_extraction_schema": data_extraction_schema,
         "max_steps": 80,  # Registrations can be multi-page
         "max_retries_per_step": 5,
         "wait_before_action_ms": 1500,
-        "proxy_location": "RESIDENTIAL"
+        "proxy_location": "RESIDENTIAL_DE"
     }
 
     headers = skyvern_headers()
@@ -1234,14 +1265,22 @@ SITE-SPECIFIC (Teamtailor):
 
     base_goal += f"""
 
-PHASE 3: FILL REGISTRATION FORM
+PHASE 3: FILL REGISTRATION/APPLICATION FORM
 - Fill all visible required fields (marked with *)
 - For dropdowns, select the most appropriate option
 - For country field, select "Norge" or "Norway"
 - Accept terms and conditions checkbox
+- CV/Resume upload: If a file upload field exists and resume_url is provided in navigation_payload,
+  use upload_file with the resume_url. If upload fails after 2 attempts, SKIP it and continue.
+  Do NOT terminate because of a CV upload failure — other fields are more important.
+- Cover letter / Søknadstekst: If this field exists and cover_letter is in navigation_payload, paste it.
+
+IMPORTANT: Do NOT terminate just because one mandatory field cannot be filled (like CV upload).
+Instead, fill everything you can and submit. The form may still accept partial submissions,
+or the missing field may not be truly mandatory. Only terminate for login walls or 404 errors.
 
 PHASE 4: SUBMIT
-- Click "Register", "Submit", "Opprett", "Registrer"
+- Click "Register", "Submit", "Opprett", "Registrer", "Send søknad", "Send inn"
 - Wait for confirmation or next step
 
 PHASE 5: VERIFICATION CHECK
@@ -1250,7 +1289,7 @@ PHASE 5: VERIFICATION CHECK
 - Report any verification requirements
 
 COMPLETION:
-- Report success=true if account created
+- Report success=true if account created or application submitted
 - Report any verification requirements
 - Report all fields that were successfully filled
 """
@@ -1600,6 +1639,9 @@ async def process_registration(flow_id: str):
     profile = await get_active_profile(user_id)
     profile_data = extract_profile_data(profile)
 
+    # Get resume URL for CV upload
+    resume_url = await get_resume_url_for_user(user_id, profile)
+
     # === CONFIRMATION FLOW ===
     # Send ALL data to Telegram for user confirmation BEFORE starting
     if chat_id:
@@ -1635,7 +1677,7 @@ async def process_registration(flow_id: str):
 
     # Start Skyvern task
     task_id = await trigger_registration_task(
-        flow_id, registration_url, profile_data, email, password
+        flow_id, registration_url, profile_data, email, password, resume_url=resume_url
     )
 
     if not task_id:
@@ -1753,7 +1795,7 @@ async def process_registration(flow_id: str):
                 await update_flow_status(flow_id, "registering")
 
                 task_id = await trigger_registration_task(
-                    flow_id, registration_url, profile_data, email, password
+                    flow_id, registration_url, profile_data, email, password, resume_url=resume_url
                 )
 
                 if task_id:
