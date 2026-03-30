@@ -1724,13 +1724,22 @@ async def extract_form_fields(url: str) -> dict:
     navigation_goal = """
 GOAL: Navigate to the job application form and EXTRACT all form field information. DO NOT fill any fields.
 
+CRITICAL: This URL was provided as the application link for a job posting. It may lead to:
+- A direct application form page
+- A company website where you need to find the careers/jobs section first
+- A recruitment platform
+Do NOT terminate just because the landing page is not a form. Explore the site first.
+
 PHASE 1: COOKIE HANDLING
 1. If Cookie Popup appears, click 'Godta alle', 'Accept all', 'Aksepter'.
 
 PHASE 2: FIND APPLICATION FORM
-2. Look for buttons: "Søk her", "Søk på stillingen", "Apply", "Send søknad", "Søk nå".
-3. Click to navigate to the application form.
-4. If redirected to external site (Webcruiter, Easycruit, HR-Manager), stay on that page.
+2. First, look for direct apply buttons: "Søk her", "Søk på stillingen", "Apply", "Send søknad", "Søk nå".
+3. If no apply button found, look for career/jobs links:
+   - "Karriere", "Ledige stillinger", "Jobs", "Jobb hos oss", "Work with us", "Stillinger"
+   - Check header menu, footer, and sidebar navigation
+4. Navigate through career pages to find the application form.
+5. If redirected to external site (Webcruiter, Easycruit, HR-Manager), stay on that page.
 
 PHASE 3: EXTRACT FORM FIELDS
 5. Once on the form page, ANALYZE all visible form fields.
@@ -1757,7 +1766,7 @@ IMPORTANT: Extract ALL fields you can see, including:
         "data_extraction_schema": data_extraction_schema,
         "max_steps_per_run": 15,  # Navigation + extraction only
         "complete_criterion": "All visible form fields on the page have been identified and extracted. The page is fully loaded.",
-        "terminate_criterion": "The page requires login that cannot be completed, or shows a 404/error page, or no form exists on this page.",
+        "terminate_criterion": "The page requires login that cannot be completed, or shows a 404/error page. Do NOT terminate because the landing page is not a form - explore the site first via career/jobs links.",
         "proxy_location": "RESIDENTIAL_DE",
         "wait_before_action_ms": 1000
     }

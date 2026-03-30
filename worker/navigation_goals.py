@@ -1082,10 +1082,17 @@ PHASE 2: CONTINUE WITHOUT LOGIN
         extra_data += f"\n- Driver License / Førerkort: {driver_license}"
 
     return f"""
-GOAL: Submit job application on this recruitment website.
+GOAL: Find the job application form on this website and submit a job application.
+
+CRITICAL: This URL was provided as the application link for a job posting. It may be:
+- A direct link to an application form
+- A company website where you need to find the careers/jobs section
+- A recruitment platform page
+Do NOT terminate just because the landing page doesn't look like a recruitment site.
+You MUST explore the site to find the application form before giving up.
 
 LOADING OVERLAY HANDLING (applies to ALL phases):
-IMPORTANT: Many recruitment sites show a loading overlay ("Siden laster...", "Loading...", a spinner,
+IMPORTANT: Many sites show a loading overlay ("Siden laster...", "Loading...", a spinner,
 or a semi-transparent overlay covering the page). If you see such an overlay:
 1. Do NOT try to click through it or interact with elements behind it.
 2. WAIT 5 seconds, then check if the page has finished loading.
@@ -1108,10 +1115,16 @@ PHASE 1: COOKIE HANDLING
 {login_phase}
 
 PHASE 3: FIND APPLICATION FORM
-5. Look for apply buttons:
-   - "Apply", "Søk", "Send søknad"
-   - "Søk på stillingen", "Apply now"
-6. Click to open form.
+5. First, look for direct apply buttons on the current page:
+   - "Apply", "Søk", "Send søknad", "Søk på stillingen", "Apply now"
+6. If NO apply button found, look for career/jobs navigation links:
+   - "Karriere", "Ledige stillinger", "Jobs", "Jobb hos oss", "Work with us"
+   - "Bli en del av teamet", "Join us", "Jobbe hos oss", "Stillinger"
+   - Check header menu, footer links, and sidebar navigation
+7. Navigate through career pages to find the application form.
+8. If after exploring 3-4 pages you still cannot find any application form,
+   look for a "Kontakt oss" (Contact us) page or email link as last resort.
+9. Click to open form.
 
 PHASE 4: FILL APPLICATION
 7. Fill all form fields using the APPLICATION DATA above:
