@@ -1968,13 +1968,19 @@ FIELD_MAPPING = {
     # Demographics - Norwegian
     'kjønn': ['gender', 'Gender', 'Kjønn'],
     'fødselsdato': ['birth_date', 'Birth Date', 'Fødselsdato', 'birthDate'],
+    'fødselsår': ['birth_year', 'Fødselsår'],
     'alder': ['age', 'Age'],
 
     # Demographics - English
     'gender': ['gender', 'Gender'],
     'date of birth': ['birth_date', 'Birth Date'],
     'birth date': ['birth_date', 'Birth Date'],
+    'birth year': ['birth_year'],
     'age': ['age', 'Age'],
+    'over 18': ['over_18'],
+    'er du over 18': ['over_18'],
+    'behersker du norsk': ['behersker_norsk'],
+    'norsk, svensk eller dansk': ['behersker_norsk'],
 
     # Education - Norwegian
     'utdanning': ['education_level', 'Education'],
@@ -2031,6 +2037,89 @@ FIELD_MAPPING = {
 }
 
 
+async def fill_missing_with_llm(missing_fields: list, profile: dict, app_data: dict, available_data: dict) -> dict:
+    """Use Gemini to answer form questions that couldn't be matched from profile directly.
+
+    Returns dict of {label: answer} for fields the AI could answer.
+    """
+    if not missing_fields:
+        return {}
+
+    # Build context from profile
+    structured = profile.get('structured_content', {}) or {}
+    profile_text = profile.get('content', '')[:3000]
+    job_title = app_data.get('job_title', '') if app_data else ''
+
+    # Build questions list
+    questions = []
+    for field in missing_fields:
+        label = field['label']
+        options = field.get('options', [])
+        if options:
+            questions.append(f"- {label} (варіанти: {', '.join(options[:10])})")
+        else:
+            questions.append(f"- {label}")
+
+    prompt = f"""You are filling out a Norwegian job application form for the candidate.
+Based on the candidate's profile, answer these form questions with short, direct values.
+
+CANDIDATE PROFILE:
+{profile_text[:2000]}
+
+ADDITIONAL DATA:
+- Birth date: {available_data.get('birth_date', 'unknown')}
+- Age: {available_data.get('age', 'unknown')}
+- Languages: {available_data.get('languages', 'unknown')}
+- Gender: {available_data.get('gender', 'unknown')}
+- Job applying for: {job_title}
+
+UNANSWERED FORM QUESTIONS:
+{chr(10).join(questions)}
+
+RULES:
+- Answer in Norwegian if the question is in Norwegian
+- For yes/no questions: answer "Ja" or "Nei"
+- For dropdown with options: pick the BEST matching option exactly as written
+- For "over 18" type questions: calculate from birth date
+- For experience questions: answer honestly based on the profile
+- For availability/hours questions: answer positively but realistically (e.g. "Fleksibel", "10-20")
+- For questions you truly cannot answer from the profile, respond with "SKIP"
+- Keep answers SHORT (1-3 words for simple fields)
+
+OUTPUT FORMAT (JSON):
+{{"field_label": "answer", "field_label2": "answer2"}}
+Only output valid JSON, nothing else."""
+
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                url,
+                headers={"Content-Type": "application/json"},
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "temperature": 0.2,
+                        "responseMimeType": "application/json",
+                        "thinkingConfig": {"thinkingBudget": 0}
+                    }
+                },
+                timeout=30.0
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                text = data["candidates"][0]["content"]["parts"][-1]["text"]
+                answers = json.loads(text)
+                # Filter out SKIP answers
+                return {k: v for k, v in answers.items() if v and str(v).upper() != "SKIP"}
+            else:
+                await log(f"⚠️ LLM fill error: HTTP {resp.status_code}")
+                return {}
+    except Exception as e:
+        await log(f"⚠️ LLM fill error: {e}")
+        return {}
+
+
 async def smart_match_fields(extracted_fields: list, profile: dict, kb_data: dict, app_data: dict = None) -> dict:
     """
     PHASE 2 of Variant 4: Match extracted form fields with available data.
@@ -2082,6 +2171,40 @@ async def smart_match_fields(extracted_fields: list, profile: dict, kb_data: dic
     available_data['postal_code'] = address_info.get('postalCode', '') or personal_info.get('postalCode', '')
     available_data['country'] = address_info.get('country', '') or personal_info.get('country', '') or 'Norge'
     available_data['address'] = address_info.get('street', '') or (personal_info.get('address', '') if isinstance(personal_info.get('address'), str) else '')
+
+    # Birth date components
+    birth_date = personal_info.get('birthDate', '')
+    available_data['birth_date'] = birth_date
+    if birth_date and '-' in birth_date:
+        parts = birth_date.split('-')
+        if len(parts) == 3:
+            available_data['birth_year'] = parts[0]
+            available_data['Fødselsår'] = parts[0]
+            available_data['birth_month'] = str(int(parts[1]))
+            available_data['birth_day'] = str(int(parts[2]))
+            # Calculate age-related flags
+            try:
+                birth_yr = int(parts[0])
+                available_data['over_18'] = 'Ja' if (datetime.now().year - birth_yr) >= 18 else 'Nei'
+                available_data['age'] = str(datetime.now().year - birth_yr)
+            except ValueError:
+                pass
+
+    # Nationality, gender, driver license
+    available_data['nationality'] = personal_info.get('nationality', '')
+    available_data['gender'] = personal_info.get('gender', '')
+    available_data['driver_license'] = personal_info.get('driverLicense', '')
+
+    # Languages from profile
+    languages = structured.get('languages', []) or []
+    lang_names = [l.get('language', '') for l in languages]
+    available_data['languages'] = ', '.join(lang_names)
+    for lang in languages:
+        lang_name = lang.get('language', '').lower()
+        available_data[f'language_{lang_name}'] = lang.get('proficiencyLevel', '')
+    # Common language questions
+    if any('norsk' in l.lower() or 'norwe' in l.lower() for l in lang_names):
+        available_data['behersker_norsk'] = 'Ja'
 
     # Work experience
     if work_exp:
@@ -2249,6 +2372,26 @@ async def smart_match_fields(extracted_fields: list, profile: dict, kb_data: dic
 
     await log(f"   ✅ Matched: {len(matched)} fields")
     await log(f"   ❓ Missing: {len(missing)} fields")
+
+    # LLM FALLBACK: Try to answer remaining questions using AI + profile context
+    if missing and GEMINI_API_KEY:
+        llm_answered = await fill_missing_with_llm(missing, profile, app_data, available_data)
+        if llm_answered:
+            # Move LLM-answered fields from missing to matched
+            still_missing = []
+            for field in missing:
+                label = field['label']
+                if label in llm_answered and llm_answered[label]:
+                    matched.append({
+                        "label": label,
+                        "value": llm_answered[label],
+                        "source": "ai",
+                        "field_type": field['field_type']
+                    })
+                else:
+                    still_missing.append(field)
+            missing = still_missing
+            await log(f"   🤖 AI filled: {len(llm_answered)} fields, still missing: {len(missing)}")
 
     return {
         "matched": matched,
