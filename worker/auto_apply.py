@@ -5068,19 +5068,13 @@ async def process_application(app, skip_confirmation: bool = False):
     # - Not a FINN Easy application
     # - Has external_apply_url or is external form
     # - chat_id is available (needed for Telegram interaction)
-    # Platforms where Hybrid Flow extraction hangs (too heavy JS DOM)
-    skip_hybrid_platforms = ['workday', 'successfactors']
+    # Hybrid Flow disabled — creates 2 Skyvern tasks (extraction + fill) which
+    # overloads Docker on local PC. Standard flow uses 1 task with all data in payload.
+    # All profile data (birth_year, languages, AI answers) already in navigation_payload.
     domain = extract_domain(external_apply_url or job_url) if (external_apply_url or job_url) else None
-    is_skip_hybrid_platform = detect_site_type(domain) in skip_hybrid_platforms if domain else False
-
-    use_hybrid = (
-        USE_HYBRID_FLOW and
-        not is_finn_easy and
-        not is_skip_hybrid_platform and
-        external_apply_url and
-        chat_id and
-        not skip_confirmation
-    )
+    skip_heavy_platforms = ['workday', 'successfactors']
+    is_skip_hybrid_platform = detect_site_type(domain) in skip_heavy_platforms if domain else False
+    use_hybrid = False  # Single-task flow is more reliable and resource-efficient
 
     confirmation_id = None  # Initialize before hybrid/standard branches
 
