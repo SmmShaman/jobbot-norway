@@ -2248,31 +2248,46 @@ async def smart_match_fields(extracted_fields: list, profile: dict, kb_data: dic
             cv_url = cv_file_path
 
     # 3. Get from profile's source_files (Supabase Storage)
+    # Note: source_files stores names WITHOUT timestamp prefix,
+    # but storage has files WITH prefix (e.g. "1765215379249_filename.pdf")
     if not cv_url:
         source_files = profile.get('source_files', []) or []
         if source_files:
-            # Get user's name from profile for matching their CV file
-            structured = profile.get('structured_content', {}) or {}
             user_name = (structured.get('personalInfo', {}) or {}).get('fullName', '')
+            first_name = user_name.split()[0].lower() if user_name else ''
 
-            # Priority: file matching user's name (multi-user safe)
-            if user_name:
-                first_name = user_name.split()[0].lower() if user_name else ''
+            # Find best matching file from source_files
+            target_file = None
+            if first_name:
                 for sf in source_files:
-                    if sf and first_name and first_name in sf.lower():
-                        cv_url = f"{SUPABASE_URL}/storage/v1/object/public/resumes/{sf}"
+                    if sf and first_name in sf.lower():
+                        target_file = sf
                         break
-
-            # Fallback: any file with 'cv' in name
-            if not cv_url:
+            if not target_file:
                 for sf in source_files:
                     if sf and 'cv' in sf.lower():
-                        cv_url = f"{SUPABASE_URL}/storage/v1/object/public/resumes/{sf}"
+                        target_file = sf
                         break
+            if not target_file and source_files[0]:
+                target_file = source_files[0]
 
-            # Last resort: first file
-            if not cv_url and source_files[0]:
-                cv_url = f"{SUPABASE_URL}/storage/v1/object/public/resumes/{source_files[0]}"
+            if target_file:
+                # Search storage for the actual filename (with timestamp prefix)
+                try:
+                    from urllib.parse import quote
+                    storage_resp = supabase.storage.from_('resumes').list()
+                    for obj in (storage_resp or []):
+                        obj_name = obj.get('name', '') if isinstance(obj, dict) else str(obj)
+                        if target_file in obj_name:
+                            cv_url = f"{SUPABASE_URL}/storage/v1/object/public/resumes/{quote(obj_name)}"
+                            break
+                except Exception as e:
+                    await log(f"   ⚠️ Storage list error: {e}")
+
+                # Fallback: try URL-encoded name directly
+                if not cv_url:
+                    from urllib.parse import quote
+                    cv_url = f"{SUPABASE_URL}/storage/v1/object/public/resumes/{quote(target_file)}"
 
     if cv_url:
         available_data['cv_file_path'] = cv_url
