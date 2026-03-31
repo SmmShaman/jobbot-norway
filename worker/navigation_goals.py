@@ -51,7 +51,11 @@ UNIVERSAL APPROACH FOR ANY NORWEGIAN RECRUITMENT FORM:
 4. FORM FIELDS (Norwegian labels):
    - Fornavn (first name), Etternavn (last name), E-post (email), Telefon (phone)
    - Adresse, Postnummer (postal code), Sted/By (city), Land (country = Norge)
-   - Fødselsdato: 3 dropdowns (day, month, year)
+   - Fødselsdato: Often 3 separate dropdowns (day, month, year) or a single date input.
+     For DROPDOWN year fields: The list may be very long (1940-2010+). Do NOT just look at visible options.
+     Use select_option with the exact year value (e.g. "1979"). If select_option fails,
+     try typing the year into the dropdown to filter/jump to it, or scroll UP in the list.
+     Split data: day from Dag field, month from Måned field, year from År field.
    - Kjønn: radio buttons (Mann/Kvinne/Annet)
    - Fylke (county), Kommune (municipality): dropdowns
    - Søknadstekst / Motivasjon / Søknadsbrev: textarea for cover letter
@@ -60,6 +64,13 @@ UNIVERSAL APPROACH FOR ANY NORWEGIAN RECRUITMENT FORM:
    - Medie/nettsted (where found job): select "Finn.no" or any option
 
 5. CRITICAL PITFALLS:
+   - LONG DROPDOWN LISTS (year, country, municipality): These have 50-200+ options.
+     Do NOT assume the value is not there just because you can't see it.
+     Step 1: Try select_option with the exact value (e.g. "1979" for year).
+     Step 2: If that fails, try typing the value into the dropdown to filter.
+     Step 3: If typing fails, scroll UP or DOWN in the dropdown to find the value.
+     Step 4: Only report "value not found" after trying all 3 methods.
+     The navigation_payload contains split date fields: Dag, Måned, År, Fødselsår.
    - Dropdowns that RESET: after selecting value, CLICK OUTSIDE dropdown before clicking Submit
    - AUTOCOMPLETE DROPDOWNS (Workday, SuccessFactors): These LOOK like text fields but are actually
      dropdowns. After typing text, a SUGGESTION LIST appears. You MUST CLICK on a suggestion from

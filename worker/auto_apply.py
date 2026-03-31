@@ -3556,6 +3556,17 @@ async def build_form_payload(app_data: dict, profile: dict, user_id: str = None)
     nationality = personal_info.get('nationality', '') or kb_data.get('nationality', '') or kb_data.get('Nationality', '') or ''
     gender = personal_info.get('gender', '') or kb_data.get('gender', '') or kb_data.get('Gender', '') or ''
 
+    # Split birth_date into components for dropdown forms (Dag/Måned/År)
+    birth_day = ""
+    birth_month = ""
+    birth_year = ""
+    if birth_date and '-' in birth_date:
+        parts = birth_date.split('-')
+        if len(parts) == 3:
+            birth_year = parts[0]          # "1979"
+            birth_month = str(int(parts[1]))  # "11" -> "11" (strip leading zero)
+            birth_day = str(int(parts[2]))    # "05" -> "5"
+
     return {
         # Personal info
         "full_name": full_name,
@@ -3564,6 +3575,13 @@ async def build_form_payload(app_data: dict, profile: dict, user_id: str = None)
         "email": personal_info.get('email', ''),
         "phone": contact_phone,
         "birth_date": birth_date,
+        "birth_day": birth_day,
+        "birth_month": birth_month,
+        "birth_year": birth_year,
+        "Dag": birth_day,
+        "Måned": birth_month,
+        "År": birth_year,
+        "Fødselsår": birth_year,
         "nationality": nationality,
         "gender": gender,
         "driver_license": personal_info.get('driverLicense', ''),
