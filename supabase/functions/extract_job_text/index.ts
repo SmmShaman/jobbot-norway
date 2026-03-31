@@ -138,6 +138,10 @@ function scoreCompanyName(name: string | null | undefined): number {
   if (trimmed.toLowerCase().includes('finn.no')) score -= 40;  // Site name, not company
   if (trimmed.toLowerCase().includes('nav.no')) score -= 40;
   if (trimmed.toLowerCase() === 'arbeidsgiver') score -= 30;  // Label, not company name
+  if (trimmed.toLowerCase().includes('arbeidsplassen logo')) score -= 50;  // NAV site logo alt text
+  if (trimmed.toLowerCase().includes('om bedriften')) score -= 30;  // Section header, not company
+  if (trimmed.toLowerCase().startsWith('om bedriften')) score -= 40;
+  if (/^(Sektor|Sted|Bransje|Stillingsfunksjon)/i.test(trimmed)) score -= 40;  // NAV field labels
 
   return Math.max(0, Math.min(100, score));
 }
