@@ -5129,9 +5129,41 @@ async def process_application(app, skip_confirmation: bool = False):
                     supabase.table("applications").update({"status": "manual_review"}).eq("id", app_id).execute()
                     return False
             elif any(d in job_domain for d in ['nav.no', 'arbeidsplassen.nav.no']):
-                await log(f"⚠️ NAV job without external URL — manual review")
-                supabase.table("applications").update({"status": "manual_review"}).eq("id", app_id).execute()
-                return False
+                # NAV is an aggregator — the real form is always on an external site
+                # Try to extract the external URL via extract_job_text edge function
+                await log(f"🔗 NAV job without external URL — extracting via extract_job_text...")
+                try:
+                    supabase_url = os.getenv("SUPABASE_URL")
+                    supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
+                    async with httpx.AsyncClient() as extract_client:
+                        extract_resp = await extract_client.post(
+                            f"{supabase_url}/functions/v1/extract_job_text",
+                            json={"job_id": job_id, "url": job_url},
+                            headers={
+                                "Authorization": f"Bearer {supabase_key}",
+                                "Content-Type": "application/json"
+                            },
+                            timeout=30.0
+                        )
+                        if extract_resp.status_code == 200:
+                            extract_data = extract_resp.json()
+                            nav_external_url = extract_data.get("external_apply_url")
+                            if nav_external_url:
+                                await log(f"✅ Extracted NAV external URL: {nav_external_url[:80]}")
+                                supabase.table("jobs").update({
+                                    "external_apply_url": nav_external_url,
+                                    "application_form_type": extract_data.get("application_form_type", "external_form")
+                                }).eq("id", job_id).execute()
+                                apply_url = nav_external_url
+                            else:
+                                await log(f"⚠️ extract_job_text returned no external URL for NAV job")
+                except Exception as e:
+                    await log(f"⚠️ Error extracting NAV URL: {e}")
+
+                if not apply_url:
+                    await log(f"⚠️ NAV job without external URL — manual review")
+                    supabase.table("applications").update({"status": "manual_review"}).eq("id", app_id).execute()
+                    return False
             else:
                 # For FINN or other sources, job_url might be the form itself
                 apply_url = job_url
