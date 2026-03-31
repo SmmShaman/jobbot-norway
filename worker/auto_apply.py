@@ -5583,15 +5583,18 @@ async def print_startup_summary():
 
 
 async def cleanup_stale_skyvern_tasks():
-    """Cancel old running Skyvern tasks that are stuck (older than 1 hour).
+    """Cancel old running Skyvern tasks and clean up finished ones.
 
-    This prevents queue blockage when worker restarts and loses track of tasks.
+    Prevents queue blockage and browser instance accumulation that
+    causes Skyvern Docker to run out of resources (CPU/RAM).
     """
     try:
         async with httpx.AsyncClient() as client:
             headers = skyvern_headers()
+
+            # 1. Cancel running tasks older than 30 minutes (stuck)
             resp = await client.get(
-                f"{SKYVERN_URL}/api/v1/tasks?status=running",
+                f"{SKYVERN_URL}/api/v1/tasks?page=1&page_size=50",
                 headers=headers, timeout=10.0
             )
             if resp.status_code != 200:
@@ -5603,16 +5606,24 @@ async def cleanup_stale_skyvern_tasks():
 
             now = datetime.now(timezone.utc)
             stale_count = 0
+            running_count = 0
 
             for task in tasks:
+                status = task.get('status', '')
                 created = task.get('created_at', '')
-                if not created:
+                tid = task.get('task_id', '')
+                if not created or not tid:
                     continue
+
+                if status == 'running':
+                    running_count += 1
+
                 try:
                     task_time = datetime.fromisoformat(created.replace('Z', '+00:00'))
-                    age_hours = (now - task_time).total_seconds() / 3600
-                    if age_hours > 1.0:  # older than 1 hour = stuck
-                        tid = task.get('task_id', '')
+                    age_minutes = (now - task_time).total_seconds() / 60
+
+                    # Cancel running tasks older than 30 min
+                    if status == 'running' and age_minutes > 30:
                         await client.post(
                             f"{SKYVERN_URL}/api/v1/tasks/{tid}/cancel",
                             headers=headers, timeout=10.0
@@ -5622,9 +5633,9 @@ async def cleanup_stale_skyvern_tasks():
                     pass
 
             if stale_count > 0:
-                await log(f"🧹 Cleaned up {stale_count} stale Skyvern tasks (>1h old)")
-            elif len(tasks) > 0:
-                await log(f"📋 Skyvern: {len(tasks)} active task(s), all fresh")
+                await log(f"🧹 Cleaned up {stale_count} stale Skyvern tasks (>30min old)")
+            elif running_count > 0:
+                await log(f"📋 Skyvern: {running_count} running task(s), all fresh")
     except Exception as e:
         await log(f"⚠️ Skyvern task cleanup error: {e}")
 
@@ -5718,8 +5729,8 @@ async def main():
         if poll_cycle % 30 == 0:
             skyvern_ok = await check_skyvern_health()
 
-        # Periodic Skyvern task cleanup (every ~30 min = 180 cycles * 10s)
-        if poll_cycle % 180 == 90:
+        # Periodic Skyvern task cleanup (every ~10 min = 60 cycles * 10s)
+        if poll_cycle % 60 == 30:
             await cleanup_stale_skyvern_tasks()
 
         # LinkedIn scanning (once per day, from local machine — Edge Functions blocked by LinkedIn)
