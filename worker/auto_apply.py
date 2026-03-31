@@ -1800,7 +1800,7 @@ IMPORTANT: Extract ALL fields you can see, including:
         "navigation_goal": navigation_goal,
         "data_extraction_goal": "Extract ALL form fields with their labels, types, required status, and options. This is for analysis - do not fill anything.",
         "data_extraction_schema": data_extraction_schema,
-        "max_steps_per_run": 15,  # Navigation + extraction only
+        "max_steps_per_run": 10,  # Navigation + extraction only (keep low to save resources)
         "complete_criterion": "All visible form fields on the page have been identified and extracted. The page is fully loaded.",
         "terminate_criterion": "The page requires login that cannot be completed, or shows a 404/error page. Do NOT terminate because the landing page is not a form - explore the site first via career/jobs links.",
         "proxy_location": "RESIDENTIAL_DE",
@@ -1828,7 +1828,7 @@ IMPORTANT: Extract ALL fields you can see, including:
             await log(f"📋 Extraction task created: {task_id}")
 
             # Wait for task completion
-            result = await wait_for_extraction_task(task_id)
+            result = await wait_for_extraction_task(task_id, max_wait=120)
             return result
 
         except Exception as e:
@@ -1847,6 +1847,7 @@ async def wait_for_extraction_task(task_id: str, max_wait: int = 300) -> dict:
             elapsed = (datetime.now() - start_time).total_seconds()
             if elapsed > max_wait:
                 await log(f"⏰ Extraction task timeout after {max_wait}s")
+                await cancel_skyvern_task(task_id)
                 return {"success": False, "error": "timeout", "fields": []}
 
             try:
@@ -4331,6 +4332,8 @@ async def monitor_task_status(task_id, chat_id: str = None, job_title: str = Non
     await log(f"⏳ Monitoring Task {task_id}...")
 
     headers = skyvern_headers()
+    monitor_start = datetime.now()
+    MAX_MONITOR_MINUTES = 15  # Hard limit — cancel task if monitoring exceeds this
 
     # Detailed reporting state
     seen_step_count = 0
@@ -4347,6 +4350,13 @@ async def monitor_task_status(task_id, chat_id: str = None, job_title: str = Non
 
     async with httpx.AsyncClient() as client:
         while True:
+            # Hard timeout — cancel task if monitoring exceeds MAX_MONITOR_MINUTES
+            elapsed_min = (datetime.now() - monitor_start).total_seconds() / 60
+            if elapsed_min > MAX_MONITOR_MINUTES:
+                await log(f"⏰ Monitor timeout ({MAX_MONITOR_MINUTES}min) — cancelling task {task_id}")
+                await cancel_skyvern_task(task_id)
+                return 'failed'
+
             # Check if user cancelled (status changed back to 'approved')
             if app_id:
                 try:
