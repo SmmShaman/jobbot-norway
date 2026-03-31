@@ -1576,6 +1576,10 @@ async def get_latest_resume_url(user_id: str = None) -> str:
     Priority:
     1. User's active profile source_files (filtered by user_id)
     2. Fallback: latest file in storage bucket (legacy, single-user)
+
+    Note: source_files stores names WITHOUT timestamp prefix, but Storage
+    has files WITH prefix (e.g. "1765215379249_filename.pdf").
+    Must search storage to find the actual filename.
     """
     try:
         # 1. Get resume from user's active profile (multi-user safe)
@@ -1583,28 +1587,41 @@ async def get_latest_resume_url(user_id: str = None) -> str:
             profile = await get_active_profile_full(user_id)
             source_files = profile.get('source_files', []) or []
             if source_files:
-                # Get user's full name for matching their CV file
                 structured = profile.get('structured_content', {}) or {}
                 user_name = (structured.get('personalInfo', {}) or {}).get('fullName', '')
+                first_name = user_name.lower().split()[0] if user_name else ''
 
-                # Priority: file matching user's name
+                # Pick best source file
+                target_file = None
                 for sf in source_files:
-                    if sf and user_name and user_name.lower().split()[0] in sf.lower():
-                        cv_url = f"{SUPABASE_URL}/storage/v1/object/public/resumes/{sf}"
-                        await log(f"📄 Resume (name match): {sf}")
-                        return cv_url
+                    if sf and first_name and first_name in sf.lower():
+                        target_file = sf
+                        break
+                if not target_file:
+                    for sf in source_files:
+                        if sf and 'cv' in sf.lower():
+                            target_file = sf
+                            break
+                if not target_file and source_files[0]:
+                    target_file = source_files[0]
 
-                # Fallback: any file with 'cv' in name
-                for sf in source_files:
-                    if sf and 'cv' in sf.lower():
-                        cv_url = f"{SUPABASE_URL}/storage/v1/object/public/resumes/{sf}"
-                        await log(f"📄 Resume (cv match): {sf}")
-                        return cv_url
+                if target_file:
+                    # Search storage for actual filename with timestamp prefix
+                    from urllib.parse import quote
+                    try:
+                        storage_files = supabase.storage.from_('resumes').list()
+                        for obj in (storage_files or []):
+                            obj_name = obj.get('name', '') if isinstance(obj, dict) else str(obj)
+                            if target_file in obj_name:
+                                cv_url = f"{SUPABASE_URL}/storage/v1/object/public/resumes/{quote(obj_name)}"
+                                await log(f"📄 Resume (storage match): {obj_name}")
+                                return cv_url
+                    except Exception as e:
+                        await log(f"⚠️ Storage list error: {e}")
 
-                # Last resort: first source file
-                if source_files[0]:
-                    cv_url = f"{SUPABASE_URL}/storage/v1/object/public/resumes/{source_files[0]}"
-                    await log(f"📄 Resume (first file): {source_files[0]}")
+                    # Fallback: URL-encoded name without prefix
+                    cv_url = f"{SUPABASE_URL}/storage/v1/object/public/resumes/{quote(target_file)}"
+                    await log(f"📄 Resume (fallback): {target_file}")
                     return cv_url
 
         # 2. Legacy fallback: find file matching user's name in storage bucket
@@ -3491,11 +3508,11 @@ async def send_telegram_photo_file(chat_id: str, file_path: str, caption: str = 
 
 # Skyvern artifacts are stored in Docker volume mapped to host
 async def fetch_task_screenshot(client, task_id: str, headers: dict, prefer_type: str = "screenshot_final") -> Optional[str]:
-    """Fetch the latest screenshot from Skyvern task artifacts via API.
+    """Fetch the latest screenshot from Skyvern task artifacts.
 
-    Downloads the screenshot and saves to /tmp. Returns path or None.
-    Works regardless of where Skyvern Docker runs (local PC, HF Space, etc).
-    prefer_type: 'screenshot_final', 'screenshot_action', or 'screenshot_llm'
+    Gets artifact URI from API, then tries to download via static file serving.
+    Falls back to local filesystem path for when worker runs on same machine as Docker.
+    Returns path to downloaded PNG or None.
     """
     try:
         steps = await fetch_task_steps(client, task_id, headers)
@@ -3529,23 +3546,38 @@ async def fetch_task_screenshot(client, task_id: str, headers: dict, prefer_type
 
             preferred = [s for s in screenshots if s.get('artifact_type') == prefer_type]
             chosen = preferred[-1] if preferred else screenshots[-1]
-            artifact_id = chosen.get('artifact_id', '')
+            uri = chosen.get('uri', '')
 
-            if not artifact_id:
+            if not uri:
                 continue
 
-            # Download screenshot via Skyvern API (works remotely, no filesystem access needed)
-            dl_resp = await client.get(
-                f"{SKYVERN_URL}/api/v1/tasks/{task_id}/steps/{step_id}/artifacts/{artifact_id}",
-                headers=headers,
-                timeout=15.0
-            )
-            if dl_resp.status_code == 200 and len(dl_resp.content) > 1000:
-                tmp_path = f"/tmp/skyvern_screenshot_{task_id}_{step_id}.png"
-                with open(tmp_path, 'wb') as f:
-                    f.write(dl_resp.content)
-                return tmp_path
+            # URI format: file:///data/artifacts/org_id/task_id/step_folder/filename.png
+            # Try to download via Skyvern's static file endpoint
+            if uri.startswith('file:///data/artifacts/'):
+                rel_path = uri.replace('file:///data/artifacts/', '')
 
+                # Method 1: Try static file via Skyvern (if configured)
+                try:
+                    dl_resp = await client.get(
+                        f"{SKYVERN_URL}/artifacts/{rel_path}",
+                        headers=headers,
+                        timeout=10.0
+                    )
+                    if dl_resp.status_code == 200 and len(dl_resp.content) > 1000:
+                        tmp_path = f"/tmp/skyvern_screenshot_{task_id}.png"
+                        with open(tmp_path, 'wb') as f:
+                            f.write(dl_resp.content)
+                        return tmp_path
+                except Exception:
+                    pass
+
+                # Method 2: Direct filesystem (worker on same machine as Docker)
+                for base in [os.path.expanduser("~/skyvern/artifacts"), "/home/stuar/skyvern/artifacts"]:
+                    host_path = os.path.join(base, rel_path)
+                    if os.path.exists(host_path):
+                        return host_path
+
+            return None
         return None
     except Exception as e:
         await log(f"⚠️ Could not fetch screenshot: {e}")
