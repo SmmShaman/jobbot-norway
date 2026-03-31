@@ -3552,24 +3552,27 @@ async def fetch_task_screenshot(client, task_id: str, headers: dict, prefer_type
                 continue
 
             # URI format: file:///data/artifacts/org_id/task_id/step_folder/filename.png
-            # Try to download via Skyvern's static file endpoint
+            # Download via artifacts file server (skyvern-files.vitalii.no)
             if uri.startswith('file:///data/artifacts/'):
                 rel_path = uri.replace('file:///data/artifacts/', '')
 
-                # Method 1: Try static file via Skyvern (if configured)
+                # Method 1: Download via dedicated artifacts file server
+                artifacts_base = os.getenv('SKYVERN_ARTIFACTS_URL', 'https://skyvern-files.vitalii.no')
                 try:
+                    from urllib.parse import quote
+                    # URL-encode path segments but keep slashes
+                    encoded_path = '/'.join(quote(seg) for seg in rel_path.split('/'))
                     dl_resp = await client.get(
-                        f"{SKYVERN_URL}/artifacts/{rel_path}",
-                        headers=headers,
-                        timeout=10.0
+                        f"{artifacts_base}/{encoded_path}",
+                        timeout=15.0
                     )
                     if dl_resp.status_code == 200 and len(dl_resp.content) > 1000:
                         tmp_path = f"/tmp/skyvern_screenshot_{task_id}.png"
                         with open(tmp_path, 'wb') as f:
                             f.write(dl_resp.content)
                         return tmp_path
-                except Exception:
-                    pass
+                except Exception as e:
+                    await log(f"⚠️ Artifacts download error: {e}")
 
                 # Method 2: Direct filesystem (worker on same machine as Docker)
                 for base in [os.path.expanduser("~/skyvern/artifacts"), "/home/stuar/skyvern/artifacts"]:
