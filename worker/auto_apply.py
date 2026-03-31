@@ -3332,22 +3332,18 @@ async def send_telegram_photo_file(chat_id: str, file_path: str, caption: str = 
 
 
 # Skyvern artifacts are stored in Docker volume mapped to host
-SKYVERN_ARTIFACTS_HOST_PATH = os.path.expanduser("~/skyvern/artifacts")
-
-
 async def fetch_task_screenshot(client, task_id: str, headers: dict, prefer_type: str = "screenshot_final") -> Optional[str]:
-    """Fetch the latest screenshot from Skyvern task artifacts.
+    """Fetch the latest screenshot from Skyvern task artifacts via API.
 
-    Returns the host filesystem path to the screenshot PNG, or None.
+    Downloads the screenshot and saves to /tmp. Returns path or None.
+    Works regardless of where Skyvern Docker runs (local PC, HF Space, etc).
     prefer_type: 'screenshot_final', 'screenshot_action', or 'screenshot_llm'
     """
     try:
-        # Get all steps to find the last completed one
         steps = await fetch_task_steps(client, task_id, headers)
         if not steps:
             return None
 
-        # Try steps from last to first
         for step in reversed(steps):
             step_id = step.get("step_id")
             if not step_id:
@@ -3365,28 +3361,32 @@ async def fetch_task_screenshot(client, task_id: str, headers: dict, prefer_type
             if not isinstance(artifacts, list):
                 continue
 
-            # Filter screenshot artifacts, prefer the requested type
             screenshots = [a for a in artifacts if 'screenshot' in a.get('artifact_type', '')]
             if not screenshots:
                 continue
 
-            # Sort by preference: screenshot_final > screenshot_action > screenshot_llm
             type_priority = {'screenshot_final': 0, 'screenshot_action': 1, 'screenshot_llm': 2}
             if prefer_type in type_priority:
                 screenshots.sort(key=lambda a: type_priority.get(a.get('artifact_type', ''), 99))
 
-            # Get the last artifact of the preferred type, or last overall
             preferred = [s for s in screenshots if s.get('artifact_type') == prefer_type]
             chosen = preferred[-1] if preferred else screenshots[-1]
+            artifact_id = chosen.get('artifact_id', '')
 
-            # Map Docker URI to host path
-            uri = chosen.get('uri', '')
-            if uri.startswith('file:///data/artifacts/'):
-                host_path = uri.replace('file:///data/artifacts/', SKYVERN_ARTIFACTS_HOST_PATH + '/')
-                if os.path.exists(host_path):
-                    return host_path
-                else:
-                    await log(f"⚠️ Screenshot file not on host: {host_path}")
+            if not artifact_id:
+                continue
+
+            # Download screenshot via Skyvern API (works remotely, no filesystem access needed)
+            dl_resp = await client.get(
+                f"{SKYVERN_URL}/api/v1/tasks/{task_id}/steps/{step_id}/artifacts/{artifact_id}",
+                headers=headers,
+                timeout=15.0
+            )
+            if dl_resp.status_code == 200 and len(dl_resp.content) > 1000:
+                tmp_path = f"/tmp/skyvern_screenshot_{task_id}_{step_id}.png"
+                with open(tmp_path, 'wb') as f:
+                    f.write(dl_resp.content)
+                return tmp_path
 
         return None
     except Exception as e:
