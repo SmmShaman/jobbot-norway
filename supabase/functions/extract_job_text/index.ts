@@ -932,9 +932,17 @@ serve(async (req: Request) => {
     // NAV often embeds applicationUrl in JSON or uses FINN for applications
     if (url.includes('nav.no') || url.includes('arbeidsplassen')) {
       // Method 1: Look for applicationUrl in embedded JSON
-      const applicationUrlMatch = html.match(/"applicationUrl"\s*:\s*"([^"]+)"/);
+      // NAV may use escaped quotes (\") or double-escaped (\\") in embedded JSON
+      // Match applicationUrl followed by https:// URL, stop at first unescaped quote
+      const applicationUrlMatch = html.match(/applicationUrl[\\"]?\s*:\s*[\\"]?(https?:\/\/[^"]+)/);
       if (applicationUrlMatch && applicationUrlMatch[1]) {
-        const appUrl = applicationUrlMatch[1].replace(/\\/g, '');
+        let appUrl = applicationUrlMatch[1]
+          .split(/\\"/)[0]            // Stop at escaped quote boundary (\\")
+          .replace(/\\+$/, '')        // Remove trailing backslashes
+          .replace(/\\u0026/g, '&')   // Decode unicode ampersand
+          .replace(/&amp;/g, '&')     // Decode HTML ampersand
+          .replace(/\\\\/g, '')       // Remove remaining double backslashes
+          .replace(/\\/g, '');        // Remove remaining single backslashes
         console.log(`🔍 NAV: Found applicationUrl in JSON: ${appUrl}`);
         if (appUrl.includes('finn.no/job/apply')) {
           externalApplyUrl = appUrl;
@@ -1036,11 +1044,13 @@ serve(async (req: Request) => {
       }
     }
 
-    // FIRST: Check for "Søk her" button (external apply) - this takes priority!
+    // FIRST: Check for "Søk her" / "Gå til søknad" button (external apply) - this takes priority!
     const sokHerSelectors = [
+      'a:contains("Gå til søknad")',
       'a:contains("Søk her")',
       'a:contains("Søk på stillingen")',
       'a:contains("Søk på jobben")',
+      'button:contains("Gå til søknad")',
       'button:contains("Søk her")',
     ];
 
