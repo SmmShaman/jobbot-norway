@@ -21,29 +21,26 @@ jobs:
         with:
           version: latest
 
-      - name: Deploy telegram-bot (no JWT verification - webhook)
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-        run: supabase functions deploy telegram-bot --no-verify-jwt --project-ref ptrmidlhfdbybxmyovtm
-
-      - name: Deploy scheduled-scanner (no JWT verification - called from GitHub Actions)
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-        run: supabase functions deploy scheduled-scanner --no-verify-jwt --project-ref ptrmidlhfdbybxmyovtm
-
-      - name: Deploy finn-2fa-webhook (no JWT verification - called from Skyvern)
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-        run: supabase functions deploy finn-2fa-webhook --no-verify-jwt --project-ref ptrmidlhfdbybxmyovtm
-
-      - name: Deploy other Edge Functions
+      - name: Deploy Edge Functions with JWT verification
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: |
           for func in supabase/functions/*/; do
             func_name=$(basename "$func")
-            if [ "$func_name" != "telegram-bot" ] && [ "$func_name" != "scheduled-scanner" ] && [ "$func_name" != "finn-2fa-webhook" ] && [ "$func_name" != "_shared" ]; then
-              echo "Deploying $func_name..."
+            # Skip no-JWT functions and _shared
+            if [ "$func_name" != "telegram-bot" ] && [ "$func_name" != "scheduled-scanner" ] && [ "$func_name" != "finn-2fa-webhook" ] && [ "$func_name" != "tech-bot" ] && [ "$func_name" != "registration-webhook" ] && [ "$func_name" != "_shared" ]; then
+              echo "Deploying $func_name (with JWT)..."
               supabase functions deploy "$func_name" --project-ref ptrmidlhfdbybxmyovtm
+            fi
+          done
+
+      - name: Deploy no-JWT functions (webhooks - MUST be last to avoid JWT overwrite)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          for func_name in telegram-bot scheduled-scanner finn-2fa-webhook tech-bot registration-webhook; do
+            if [ -d "supabase/functions/$func_name" ]; then
+              echo "Deploying $func_name (no JWT)..."
+              supabase functions deploy "$func_name" --no-verify-jwt --project-ref ptrmidlhfdbybxmyovtm
             fi
           done
