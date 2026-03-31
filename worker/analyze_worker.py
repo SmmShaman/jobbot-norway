@@ -30,6 +30,7 @@ SUPABASE_KEY = os.environ.get('SUPABASE_SERVICE_KEY')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 GEMINI_MODEL = 'gemini-2.5-pro'
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+TELEGRAM_TECH_TOKEN = os.environ.get('TELEGRAM_TECH_BOT_TOKEN')
 
 # Pricing (Gemini 2.5 Pro - approximate)
 PRICE_INPUT = 1.25 / 1_000_000   # $1.25 per 1M tokens
@@ -64,6 +65,22 @@ TASK:
 6. EXTRACT REQUIREMENTS: List qualifications, skills, experience the employer requires.
 7. EXTRACT OFFERS: List what the company offers (benefits, salary, perks, work conditions).
 
+CANDIDATE EVALUATION RULES (CRITICAL):
+- The candidate may have a DIVERSE career spanning multiple fields and decades.
+- You MUST consider ALL work experience listed in the profile — not just recent roles.
+- Old experience (even 10-20+ years ago) is STILL RELEVANT if it matches the job requirements.
+- Examples: teaching experience matters for education jobs, management experience matters for leader roles, military/security experience matters for safety roles, economics background matters for finance roles.
+- Do NOT bias the score toward the candidate's most recent or most prominent career track.
+- Match the SPECIFIC job requirements against the ENTIRE profile — find the best-fitting experience from ANY period.
+- Education and certifications from any period are always relevant.
+- Transferable skills (leadership, communication, planning, budgeting) apply across fields.
+
+SCORING GUIDELINES:
+- 70-100: Strong match — candidate has direct experience or education in this field
+- 50-69: Moderate match — candidate has transferable skills or partial experience
+- 30-49: Weak match — some overlap but significant gaps
+- 0-29: Poor match — very little relevant experience
+
 ANALYSIS FORMAT (CRITICAL):
 The "analysis" field MUST use this EXACT structure — cons FIRST, then pros:
 ❌ Мінуси:
@@ -75,6 +92,7 @@ The "analysis" field MUST use this EXACT structure — cons FIRST, then pros:
 - [another pro]
 
 Write 2-5 bullet points for each section. Always include BOTH sections even if one side is weak.
+When listing pros, explicitly reference the SPECIFIC role/period from the candidate's history that is relevant.
 If the target language is Norwegian, use "❌ Ulemper:" and "✅ Fordeler:".
 If the target language is English, use "❌ Cons:" and "✅ Pros:".
 
@@ -574,19 +592,21 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                 # Rate limiting for Gemini API
                 await asyncio.sleep(1.0)
 
-            # Auto-søknad summary for this user
-            if auto_soknad and auto_soknad_count > 0 and TELEGRAM_TOKEN and chat_id:
-                summary = f"📋 <b>Авто-søknader:</b>\n"
-                summary += f"✅ Створено: {auto_soknad_count}\n"
-                summary += f"📊 Поріг: ≥{min_score}%\n"
-                summary += f"💰 Вартість: ${auto_soknad_cost:.4f}"
-                try:
-                    await client.post(
-                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                        json={'chat_id': chat_id, 'text': summary, 'parse_mode': 'HTML'}
-                    )
-                except Exception as e:
-                    print(f"   ⚠️ TG summary failed: {e}")
+            # Auto-søknad summary for this user (sent to tech bot)
+            if auto_soknad and auto_soknad_count > 0 and chat_id:
+                tech_token = TELEGRAM_TECH_TOKEN or TELEGRAM_TOKEN
+                if tech_token:
+                    summary = f"📋 <b>Авто-søknader:</b>\n"
+                    summary += f"✅ Створено: {auto_soknad_count}\n"
+                    summary += f"📊 Поріг: ≥{min_score}%\n"
+                    summary += f"💰 Вартість: ${auto_soknad_cost:.4f}"
+                    try:
+                        await client.post(
+                            f"https://api.telegram.org/bot{tech_token}/sendMessage",
+                            json={'chat_id': chat_id, 'text': summary, 'parse_mode': 'HTML'}
+                        )
+                    except Exception as e:
+                        print(f"   ⚠️ TG summary failed: {e}")
 
             # Per-user system_log (so getTotalCost filtered by user_id works)
             if user_analyzed > 0:
@@ -627,6 +647,28 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
         }).execute()
     except Exception as e:
         print(f"⚠️ Failed to write system log: {e}")
+
+    # 6. Send analysis summary to tech bot
+    tech_token = TELEGRAM_TECH_TOKEN or TELEGRAM_TOKEN
+    if tech_token and total_analyzed > 0:
+        # Find admin chat_id to send summary
+        try:
+            admin_settings = supabase.table('user_settings').select('telegram_chat_id').eq('role', 'admin').limit(1).execute()
+            admin_chat = admin_settings.data[0].get('telegram_chat_id') if admin_settings.data else None
+            if admin_chat:
+                summary_msg = (
+                    f"📊 <b>Аналіз завершено</b>\n\n"
+                    f"📋 Оброблено: {total_analyzed} вакансій\n"
+                    f"👥 Користувачів: {len(jobs_by_user)}\n"
+                    f"💰 Вартість: ${total_cost:.4f}"
+                )
+                async with httpx.AsyncClient() as tc:
+                    await tc.post(
+                        f"https://api.telegram.org/bot{tech_token}/sendMessage",
+                        json={'chat_id': str(admin_chat), 'text': summary_msg, 'parse_mode': 'HTML'}
+                    )
+        except Exception as e:
+            print(f"⚠️ Failed to send tech summary: {e}")
 
 
 if __name__ == '__main__':
