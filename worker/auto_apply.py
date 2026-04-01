@@ -730,7 +730,7 @@ async def cleanup_stuck_applications():
         except Exception:
             pass  # Function may not exist yet (pre-migration)
 
-        cutoff = (datetime.now() - timedelta(minutes=STUCK_TIMEOUT_MINUTES)).isoformat()
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=STUCK_TIMEOUT_MINUTES)).isoformat()
         response = supabase.table("applications") \
             .select("id, job_id, updated_at") \
             .eq("status", "sending") \
