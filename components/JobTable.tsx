@@ -1,5 +1,6 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Job, Application, JobTableExportInfo } from '../types';
 import { ExternalLink, MapPin, Building, ChevronDown, ChevronUp, FileText, Bot, Loader2, CheckSquare, Square, Sparkles, Download, AlertCircle, PenTool, Calendar, RefreshCw, X, CheckCircle, Rocket, Eye, EyeOff, ListChecks, DollarSign, Smartphone, RotateCw, Shield, Flame, Zap, StopCircle, Copy, Check, Brain } from 'lucide-react';
 import { api } from '../services/api';
@@ -14,9 +15,11 @@ interface JobTableProps {
   onExportInfoChange?: (info: JobTableExportInfo) => void;
   exportColumns?: Set<string>;
   onToggleExportColumn?: (key: string) => void;
+  initialExpandedJobId?: string;
 }
 
-export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarCollapsed, onExportInfoChange, exportColumns, onToggleExportColumn }) => {
+export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarCollapsed, onExportInfoChange, exportColumns, onToggleExportColumn, initialExpandedJobId }) => {
+  const navigate = useNavigate();
   const { t } = useLanguage();
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [loadingDesc, setLoadingDesc] = useState<string | null>(null);
@@ -300,17 +303,27 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
     return date.toLocaleDateString('nb-NO', { day: 'numeric', month: 'short' });
   };
 
+  // --- AUTO-EXPAND from URL parameter ---
+  useEffect(() => {
+    if (initialExpandedJobId && jobs.length > 0 && expandedJobId !== initialExpandedJobId) {
+      const job = jobs.find(j => j.id === initialExpandedJobId);
+      if (job) {
+        toggleExpand(job);
+      }
+    }
+  }, [initialExpandedJobId, jobs.length]);
+
   // --- UNIVERSAL POLLING EFFECT (Only for expanded job application status) ---
   useEffect(() => {
     let interval: any;
-    
+
     if (expandedJobId) {
         // Reduced frequency to avoid overload, kept specific to open job
         interval = setInterval(async () => {
             await refreshApplicationStatus();
         }, 5000);
     }
-    
+
     return () => clearInterval(interval);
   }, [expandedJobId]);
 
@@ -569,12 +582,14 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
       setExpandedJobId(null);
       setApplicationData(null);
       if (setSidebarCollapsed) setSidebarCollapsed(false);
+      navigate('/jobs', { replace: true });
       return;
     }
-    
+
     if (setSidebarCollapsed) setSidebarCollapsed(true);
-    
+
     setExpandedJobId(job.id);
+    navigate(`/jobs/${job.id}`, { replace: true });
     setApplicationData(null);
     
     const app = await api.getApplication(job.id);

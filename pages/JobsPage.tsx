@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useParams } from 'react-router-dom';
 import { JobTable } from '../components/JobTable';
 import { api } from '../services/api';
 import { Job, ExportHistory, JobTableExportInfo } from '../types';
@@ -151,6 +152,7 @@ const EXPORT_COLUMNS: ExportColumnConfig[] = [
 const COLUMN_STORAGE_KEY = 'jobbot-export-columns';
 
 export const JobsPage: React.FC<JobsPageProps> = ({ setSidebarCollapsed }) => {
+  const { jobId } = useParams<{ jobId?: string }>();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [scanSchedule, setScanSchedule] = useState<ScanScheduleInfo | null>(null);
@@ -770,7 +772,7 @@ export const JobsPage: React.FC<JobsPageProps> = ({ setSidebarCollapsed }) => {
            </div>
         </div>
       ) : (
-        <JobTable jobs={jobs} onRefresh={() => fetchJobs(true)} setSidebarCollapsed={setSidebarCollapsed} onExportInfoChange={handleExportInfoChange} exportColumns={enabledColumns} onToggleExportColumn={toggleColumn} />
+        <JobTable jobs={jobs} onRefresh={() => fetchJobs(true)} setSidebarCollapsed={setSidebarCollapsed} onExportInfoChange={handleExportInfoChange} exportColumns={enabledColumns} onToggleExportColumn={toggleColumn} initialExpandedJobId={jobId} />
       )}
     </div>
   );
