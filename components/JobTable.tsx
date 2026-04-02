@@ -1,6 +1,6 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Job, Application, JobTableExportInfo } from '../types';
 import { ExternalLink, MapPin, Building, ChevronDown, ChevronUp, FileText, Bot, Loader2, CheckSquare, Square, Sparkles, Download, AlertCircle, PenTool, Calendar, RefreshCw, X, CheckCircle, Rocket, Eye, EyeOff, ListChecks, DollarSign, Smartphone, RotateCw, Shield, Flame, Zap, StopCircle, Copy, Check, Brain } from 'lucide-react';
 import { api } from '../services/api';
@@ -65,18 +65,43 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
   const dateDropdownRef = useRef<HTMLDivElement>(null);
   const companyDropdownRef = useRef<HTMLDivElement>(null);
 
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Resolve "period" shortcut to date range
+  const resolveInitialDates = (): { startDate: string; endDate: string } => {
+    const period = searchParams.get('period');
+    if (period) {
+      const end = new Date();
+      const start = new Date();
+      if (period === 'week') start.setDate(end.getDate() - 7);
+      else if (period === 'month') start.setDate(end.getDate() - 30);
+      else if (period === '3days') start.setDate(end.getDate() - 3);
+      else if (period === 'today') { /* start = today */ }
+      return {
+        startDate: start.toISOString().slice(0, 10),
+        endDate: end.toISOString().slice(0, 10),
+      };
+    }
+    return {
+      startDate: searchParams.get('from') || '',
+      endDate: searchParams.get('to') || '',
+    };
+  };
+
+  const initialDates = resolveInitialDates();
+
   const [filters, setFilters] = useState({
-    title: '',
-    company: '',
-    location: '',
-    startDate: '',
-    endDate: '',
-    minScore: 0,
-    soknadFilter: 'all' as 'all' | 'with' | 'without',
-    appStatusFilter: 'all' as 'all' | 'sent' | 'written_not_sent' | 'not_written',
-    formTypeFilter: 'all' as 'all' | 'finn_easy' | 'external_form' | 'external_registration' | 'unknown' | 'no_url',
-    deadlineFilter: 'all' as 'all' | 'expired' | 'active' | 'no_deadline',
-    sourceFilter: 'all' as 'all' | 'FINN' | 'NAV' | 'LINKEDIN'
+    title: searchParams.get('title') || '',
+    company: searchParams.get('company') || '',
+    location: searchParams.get('location') || '',
+    startDate: initialDates.startDate,
+    endDate: initialDates.endDate,
+    minScore: Number(searchParams.get('score')) || 0,
+    soknadFilter: (searchParams.get('soknad') || 'all') as 'all' | 'with' | 'without',
+    appStatusFilter: (searchParams.get('appStatus') || 'all') as 'all' | 'sent' | 'written_not_sent' | 'not_written',
+    formTypeFilter: (searchParams.get('formType') || 'all') as 'all' | 'finn_easy' | 'external_form' | 'external_registration' | 'unknown' | 'no_url',
+    deadlineFilter: (searchParams.get('deadline') || 'all') as 'all' | 'expired' | 'active' | 'no_deadline',
+    sourceFilter: (searchParams.get('source') || 'all') as 'all' | 'FINN' | 'NAV' | 'LINKEDIN'
   });
 
   // Excluded companies filter
@@ -87,6 +112,23 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
     } catch { /* ignore */ }
     return new Set();
   });
+
+  // Sync filters → URL search params
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (filters.title) params.set('title', filters.title);
+    if (filters.company) params.set('company', filters.company);
+    if (filters.location) params.set('location', filters.location);
+    if (filters.startDate) params.set('from', filters.startDate);
+    if (filters.endDate) params.set('to', filters.endDate);
+    if (filters.minScore > 0) params.set('score', String(filters.minScore));
+    if (filters.soknadFilter !== 'all') params.set('soknad', filters.soknadFilter);
+    if (filters.appStatusFilter !== 'all') params.set('appStatus', filters.appStatusFilter);
+    if (filters.formTypeFilter !== 'all') params.set('formType', filters.formTypeFilter);
+    if (filters.deadlineFilter !== 'all') params.set('deadline', filters.deadlineFilter);
+    if (filters.sourceFilter !== 'all') params.set('source', filters.sourceFilter);
+    setSearchParams(params, { replace: true });
+  }, [filters]);
 
   const toggleExcludeCompany = (company: string) => {
     setExcludedCompanies(prev => {
@@ -582,14 +624,14 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
       setExpandedJobId(null);
       setApplicationData(null);
       if (setSidebarCollapsed) setSidebarCollapsed(false);
-      navigate('/jobs', { replace: true });
+      navigate({ pathname: '/jobs', search: searchParams.toString() }, { replace: true });
       return;
     }
 
     if (setSidebarCollapsed) setSidebarCollapsed(true);
 
     setExpandedJobId(job.id);
-    navigate(`/jobs/${job.id}`, { replace: true });
+    navigate({ pathname: `/jobs/${job.id}`, search: searchParams.toString() }, { replace: true });
     setApplicationData(null);
     
     const app = await api.getApplication(job.id);
