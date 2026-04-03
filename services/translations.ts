@@ -122,6 +122,23 @@ export const translations = {
         duties: 'Key Duties (What to do)',
         description: 'Job Description',
         application: 'Application (Søknad)'
+      },
+      filters: {
+        applicationAll: 'Application: All',
+        applicationSent: 'Sent',
+        applicationWritten: 'Written',
+        applicationNone: 'No application',
+        formAll: 'Form type: All',
+        formNoUrl: 'No URL',
+        formFinnEasy: 'FINN Easy',
+        formExternal: 'Form',
+        formRegistration: 'Registration',
+        formUnknown: 'Unknown',
+        deadlineAll: 'Deadline: All',
+        deadlineExpired: 'Expired',
+        deadlineActive: 'Active',
+        deadlineNone: 'No deadline',
+        sourceAll: 'Source: All',
       }
     },
     settings: {
@@ -326,6 +343,23 @@ export const translations = {
         duties: 'Nøkkeloppgaver (Hva må gjøres)',
         description: 'Stillingsbeskrivelse',
         application: 'Søknad'
+      },
+      filters: {
+        applicationAll: 'Søknad: Alle',
+        applicationSent: 'Sendt',
+        applicationWritten: 'Skrevet',
+        applicationNone: 'Ingen søknad',
+        formAll: 'Skjematype: Alle',
+        formNoUrl: 'Uten URL',
+        formFinnEasy: 'FINN Easy',
+        formExternal: 'Skjema',
+        formRegistration: 'Registrering',
+        formUnknown: 'Ukjent',
+        deadlineAll: 'Frist: Alle',
+        deadlineExpired: 'Utløpt',
+        deadlineActive: 'Aktiv',
+        deadlineNone: 'Ingen frist',
+        sourceAll: 'Kilde: Alle',
       }
     },
     settings: {
@@ -530,6 +564,23 @@ export const translations = {
         duties: 'Ключові Обов\'язки (Що робити)',
         description: 'Опис Вакансії',
         application: 'Заявка (Søknad)'
+      },
+      filters: {
+        applicationAll: 'Заявка: Всі',
+        applicationSent: 'Відправлені',
+        applicationWritten: 'Написані',
+        applicationNone: 'Без заявки',
+        formAll: 'Подача: Всі',
+        formNoUrl: 'Без URL',
+        formFinnEasy: 'FINN Easy',
+        formExternal: 'Форма',
+        formRegistration: 'Реєстрація',
+        formUnknown: 'Невідомо',
+        deadlineAll: 'Дедлайн: Всі',
+        deadlineExpired: 'Протерміновані',
+        deadlineActive: 'Активні',
+        deadlineNone: 'Без дедлайну',
+        sourceAll: 'Джерело: Всі',
       }
     },
     settings: {

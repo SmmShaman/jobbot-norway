@@ -97,7 +97,6 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
     startDate: initialDates.startDate,
     endDate: initialDates.endDate,
     minScore: Number(searchParams.get('score')) || 0,
-    soknadFilter: (searchParams.get('soknad') || 'all') as 'all' | 'with' | 'without',
     appStatusFilter: (searchParams.get('appStatus') || 'all') as 'all' | 'sent' | 'written_not_sent' | 'not_written',
     formTypeFilter: (searchParams.get('formType') || 'all') as 'all' | 'finn_easy' | 'external_form' | 'external_registration' | 'unknown' | 'no_url',
     deadlineFilter: (searchParams.get('deadline') || 'all') as 'all' | 'expired' | 'active' | 'no_deadline',
@@ -122,7 +121,6 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
     if (filters.startDate) params.set('from', filters.startDate);
     if (filters.endDate) params.set('to', filters.endDate);
     if (filters.minScore > 0) params.set('score', String(filters.minScore));
-    if (filters.soknadFilter !== 'all') params.set('soknad', filters.soknadFilter);
     if (filters.appStatusFilter !== 'all') params.set('appStatus', filters.appStatusFilter);
     if (filters.formTypeFilter !== 'all') params.set('formType', filters.formTypeFilter);
     if (filters.deadlineFilter !== 'all') params.set('deadline', filters.deadlineFilter);
@@ -447,14 +445,6 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
         matchScore = score >= filters.minScore;
       }
 
-      // Søknad Filter
-      let matchSoknad = true;
-      if (filters.soknadFilter !== 'all') {
-        const hasSoknad = !!job.application_id;
-        if (filters.soknadFilter === 'with') matchSoknad = hasSoknad;
-        else if (filters.soknadFilter === 'without') matchSoknad = !hasSoknad;
-      }
-
       // Application Status Filter
       let matchAppStatus = true;
       if (filters.appStatusFilter !== 'all') {
@@ -509,7 +499,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
         matchSource = jobSource === filters.sourceFilter;
       }
 
-      return matchTitle && matchCompany && matchLocation && matchDate && matchScore && matchSoknad && matchAppStatus && matchFormType && matchDeadline && matchSource;
+      return matchTitle && matchCompany && matchLocation && matchDate && matchScore && matchAppStatus && matchFormType && matchDeadline && matchSource;
     });
   }, [jobs, filters]);
 
@@ -1350,27 +1340,16 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
               </span>
             </div>
 
-            {/* Søknad Filter */}
-            <select
-              value={filters.soknadFilter}
-              onChange={e => setFilters({...filters, soknadFilter: e.target.value as any})}
-              className={`px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${filters.soknadFilter !== 'all' ? 'bg-green-50 text-green-700 border-green-200' : 'border-slate-200 text-slate-600'}`}
-            >
-              <option value="all">Søknad: All</option>
-              <option value="with">✓ Written</option>
-              <option value="without">✗ Not written</option>
-            </select>
-
             {/* Application Status Filter */}
             <select
               value={filters.appStatusFilter}
               onChange={e => setFilters({...filters, appStatusFilter: e.target.value as any})}
               className={`px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${filters.appStatusFilter !== 'all' ? (filters.appStatusFilter === 'sent' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200') : 'border-slate-200 text-slate-600'}`}
             >
-              <option value="all">Статус: All</option>
-              <option value="sent">✅ Відправлені</option>
-              <option value="written_not_sent">📝 Написані</option>
-              <option value="not_written">⬜ Без заявки</option>
+              <option value="all">{t('jobs.filters.applicationAll')}</option>
+              <option value="sent">{t('jobs.filters.applicationSent')}</option>
+              <option value="written_not_sent">{t('jobs.filters.applicationWritten')}</option>
+              <option value="not_written">{t('jobs.filters.applicationNone')}</option>
             </select>
 
             {/* Form Type Filter (Application method) */}
@@ -1379,12 +1358,12 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
               onChange={e => setFilters({...filters, formTypeFilter: e.target.value as any})}
               className={`px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${filters.formTypeFilter !== 'all' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'border-slate-200 text-slate-600'}`}
             >
-              <option value="all">Подача: All</option>
-              <option value="no_url">🔴 Без URL ({jobsNeedingUrlExtraction.length})</option>
-              <option value="finn_easy">⚡ FINN Easy</option>
-              <option value="external_form">📝 Форма</option>
-              <option value="external_registration">🔐 Реєстрація</option>
-              <option value="unknown">❓ Невідомо</option>
+              <option value="all">{t('jobs.filters.formAll')}</option>
+              <option value="no_url">{t('jobs.filters.formNoUrl')} ({jobsNeedingUrlExtraction.length})</option>
+              <option value="finn_easy">{t('jobs.filters.formFinnEasy')}</option>
+              <option value="external_form">{t('jobs.filters.formExternal')}</option>
+              <option value="external_registration">{t('jobs.filters.formRegistration')}</option>
+              <option value="unknown">{t('jobs.filters.formUnknown')}</option>
             </select>
 
             {/* Deadline Filter */}
@@ -1393,10 +1372,10 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
               onChange={e => setFilters({...filters, deadlineFilter: e.target.value as any})}
               className={`px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${filters.deadlineFilter !== 'all' ? (filters.deadlineFilter === 'expired' ? 'bg-red-50 text-red-700 border-red-200' : 'bg-green-50 text-green-700 border-green-200') : 'border-slate-200 text-slate-600'}`}
             >
-              <option value="all">Дедлайн: All</option>
-              <option value="expired">🔴 Протерміновані</option>
-              <option value="active">🟢 Активні</option>
-              <option value="no_deadline">⚪ Без дедлайну</option>
+              <option value="all">{t('jobs.filters.deadlineAll')}</option>
+              <option value="expired">{t('jobs.filters.deadlineExpired')}</option>
+              <option value="active">{t('jobs.filters.deadlineActive')}</option>
+              <option value="no_deadline">{t('jobs.filters.deadlineNone')}</option>
             </select>
 
             {/* Source Filter (FINN/NAV/LinkedIn) */}
@@ -1405,7 +1384,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
               onChange={e => setFilters({...filters, sourceFilter: e.target.value as any})}
               className={`px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${filters.sourceFilter !== 'all' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'border-slate-200 text-slate-600'}`}
             >
-              <option value="all">Джерело: All</option>
+              <option value="all">{t('jobs.filters.sourceAll')}</option>
               <option value="FINN">🏠 FINN</option>
               <option value="NAV">🏛️ NAV</option>
               <option value="LINKEDIN">💼 LinkedIn</option>
