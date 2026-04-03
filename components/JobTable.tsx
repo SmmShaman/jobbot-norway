@@ -1431,9 +1431,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
               <HelpTip text={t('jobs.help.autoApply')} />
 
             </>
-          ) : (
-             <span className="text-xs text-slate-400 italic px-2">{t('jobs.selectAction')}</span>
-          )}
+          ) : null}
         </div>
       </div>
 
