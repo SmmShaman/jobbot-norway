@@ -4,7 +4,8 @@ import { useParams } from 'react-router-dom';
 import { JobTable } from '../components/JobTable';
 import { api } from '../services/api';
 import { Job, ExportHistory, JobTableExportInfo } from '../types';
-import { Download, Loader2, RefreshCw, Clock, Calendar, FileSpreadsheet, FileText, History, X, Trash2, Printer } from 'lucide-react';
+import { Download, Loader2, RefreshCw, Clock, Calendar, FileSpreadsheet, FileText, History, X, Trash2, Printer, Search, HelpCircle } from 'lucide-react';
+import { useLanguage } from '../contexts/LanguageContext';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -151,10 +152,22 @@ const EXPORT_COLUMNS: ExportColumnConfig[] = [
 
 const COLUMN_STORAGE_KEY = 'jobbot-export-columns';
 
+const HelpTip: React.FC<{ text: string }> = ({ text }) => (
+  <span className="relative group inline-flex items-center">
+    <HelpCircle size={14} className="text-slate-400 hover:text-blue-500 cursor-help transition-colors" />
+    <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 text-xs text-white bg-slate-800 rounded-lg shadow-lg whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 max-w-xs text-center">
+      {text}
+      <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
+    </span>
+  </span>
+);
+
 export const JobsPage: React.FC<JobsPageProps> = ({ setSidebarCollapsed }) => {
   const { jobId } = useParams<{ jobId?: string }>();
+  const { t } = useLanguage();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isScanning, setIsScanning] = useState(false);
   const [scanSchedule, setScanSchedule] = useState<ScanScheduleInfo | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -596,6 +609,23 @@ export const JobsPage: React.FC<JobsPageProps> = ({ setSidebarCollapsed }) => {
     }
   }, []);
 
+  const handleRescan = async () => {
+    if (!confirm(t('jobs.help.rescan'))) return;
+    setIsScanning(true);
+    try {
+      const result = await api.settings.triggerUserScan();
+      if (result.success) {
+        alert(`Scan complete!\n\nFound: ${result.jobsFound || 0}\nAnalyzed: ${result.analyzed || 0}`);
+        fetchJobs(true);
+      } else {
+        alert(`Scan error: ${result.message}`);
+      }
+    } catch (e: any) {
+      alert(`Error: ${e.message}`);
+    }
+    setIsScanning(false);
+  };
+
   // Initial load + Realtime Subscription
   useEffect(() => {
     fetchJobs();
@@ -646,49 +676,77 @@ export const JobsPage: React.FC<JobsPageProps> = ({ setSidebarCollapsed }) => {
             </div>
           )}
         </div>
-        <div className="flex gap-3">
-          <button
-            onClick={() => fetchJobs(false)}
-            className="flex items-center gap-2 text-slate-600 bg-white border border-slate-300 px-4 py-2 rounded-lg hover:bg-slate-50 text-sm font-medium"
-          >
-            <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
-            Refresh
-          </button>
-          <button
-            onClick={() => handleExport('xlsx')}
-            disabled={isExporting || jobs.length === 0}
-            className="flex items-center gap-2 text-white bg-emerald-600 px-4 py-2 rounded-lg hover:bg-emerald-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isExporting ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}
-            Excel{isFiltered ? ` (${exportCount})` : ''}
-          </button>
-          <button
-            onClick={() => handleExport('pdf')}
-            disabled={isExporting || jobs.length === 0}
-            className="flex items-center gap-2 text-white bg-red-600 px-4 py-2 rounded-lg hover:bg-red-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isExporting ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
-            PDF{isFiltered ? ` (${exportCount})` : ''}
-          </button>
-          <button
-            onClick={() => handlePrint()}
-            disabled={isExporting || jobs.length === 0}
-            className="flex items-center gap-2 text-white bg-purple-600 px-4 py-2 rounded-lg hover:bg-purple-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Printer size={16} />
-            Print{isFiltered ? ` (${exportCount})` : ''}
-          </button>
-          <div className="flex items-center bg-white border border-slate-300 rounded-lg overflow-hidden">
-            <button onClick={() => setExportLang('no')} className={`px-3 py-2 text-xs font-medium ${exportLang === 'no' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}>🇳🇴 NO</button>
-            <button onClick={() => setExportLang('uk')} className={`px-3 py-2 text-xs font-medium ${exportLang === 'uk' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}>🇺🇦 UA</button>
+        <div className="flex gap-3 flex-wrap items-center">
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => fetchJobs(false)}
+              className="flex items-center gap-2 text-slate-600 bg-white border border-slate-300 px-4 py-2 rounded-lg hover:bg-slate-50 text-sm font-medium"
+            >
+              <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
+              {t('jobs.refresh')}
+            </button>
+            <HelpTip text={t('jobs.help.refresh')} />
           </div>
-          <button
-            onClick={() => { setShowHistory(true); fetchExportHistory(); }}
-            className="flex items-center gap-2 text-slate-600 bg-white border border-slate-300 px-4 py-2 rounded-lg hover:bg-slate-50 text-sm font-medium"
-            title="Історія експортів"
-          >
-            <History size={16} />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={handleRescan}
+              disabled={isScanning}
+              className="flex items-center gap-2 text-white bg-emerald-600 px-4 py-2 rounded-lg hover:bg-emerald-700 text-sm font-medium disabled:opacity-50"
+            >
+              {isScanning ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
+              {t('jobs.rescan')}
+            </button>
+            <HelpTip text={t('jobs.help.rescan')} />
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => handleExport('xlsx')}
+              disabled={isExporting || jobs.length === 0}
+              className="flex items-center gap-2 text-white bg-blue-600 px-4 py-2 rounded-lg hover:bg-blue-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isExporting ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}
+              Excel{isFiltered ? ` (${exportCount})` : ''}
+            </button>
+            <HelpTip text={t('jobs.help.excel')} />
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => handleExport('pdf')}
+              disabled={isExporting || jobs.length === 0}
+              className="flex items-center gap-2 text-white bg-red-600 px-4 py-2 rounded-lg hover:bg-red-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isExporting ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
+              PDF{isFiltered ? ` (${exportCount})` : ''}
+            </button>
+            <HelpTip text={t('jobs.help.pdf')} />
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => handlePrint()}
+              disabled={isExporting || jobs.length === 0}
+              className="flex items-center gap-2 text-white bg-purple-600 px-4 py-2 rounded-lg hover:bg-purple-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Printer size={16} />
+              Print{isFiltered ? ` (${exportCount})` : ''}
+            </button>
+            <HelpTip text={t('jobs.help.print')} />
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="flex items-center bg-white border border-slate-300 rounded-lg overflow-hidden">
+              <button onClick={() => setExportLang('no')} className={`px-3 py-2 text-xs font-medium ${exportLang === 'no' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}>🇳🇴 NO</button>
+              <button onClick={() => setExportLang('uk')} className={`px-3 py-2 text-xs font-medium ${exportLang === 'uk' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}>🇺🇦 UA</button>
+            </div>
+            <HelpTip text={t('jobs.help.exportLang')} />
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => { setShowHistory(true); fetchExportHistory(); }}
+              className="flex items-center gap-2 text-slate-600 bg-white border border-slate-300 px-4 py-2 rounded-lg hover:bg-slate-50 text-sm font-medium"
+            >
+              <History size={16} />
+            </button>
+            <HelpTip text={t('jobs.help.history')} />
+          </div>
         </div>
       </div>
 

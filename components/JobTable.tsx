@@ -2,7 +2,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Job, Application, JobTableExportInfo } from '../types';
-import { ExternalLink, MapPin, Building, ChevronDown, ChevronUp, FileText, Bot, Loader2, CheckSquare, Square, Sparkles, Download, AlertCircle, PenTool, Calendar, RefreshCw, X, CheckCircle, Rocket, Eye, EyeOff, ListChecks, DollarSign, Smartphone, RotateCw, Shield, Flame, Zap, StopCircle, Copy, Check, Brain } from 'lucide-react';
+import { ExternalLink, MapPin, Building, ChevronDown, ChevronUp, FileText, Bot, Loader2, CheckSquare, Square, Sparkles, Download, AlertCircle, PenTool, Calendar, RefreshCw, X, CheckCircle, Rocket, Eye, EyeOff, ListChecks, DollarSign, Smartphone, RotateCw, Shield, Flame, Zap, StopCircle, Copy, Check, Brain, HelpCircle } from 'lucide-react';
 import { api } from '../services/api';
 import { useLanguage } from '../contexts/LanguageContext';
 import { Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer } from 'recharts';
@@ -17,6 +17,16 @@ interface JobTableProps {
   onToggleExportColumn?: (key: string) => void;
   initialExpandedJobId?: string;
 }
+
+const HelpTip: React.FC<{ text: string }> = ({ text }) => (
+  <span className="relative group inline-flex items-center">
+    <HelpCircle size={14} className="text-slate-400 hover:text-blue-500 cursor-help transition-colors" />
+    <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 text-xs text-white bg-slate-800 rounded-lg shadow-lg whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 max-w-xs text-center">
+      {text}
+      <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
+    </span>
+  </span>
+);
 
 export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarCollapsed, onExportInfoChange, exportColumns, onToggleExportColumn, initialExpandedJobId }) => {
   const navigate = useNavigate();
@@ -58,7 +68,6 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
   // Bulk Selection State
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isProcessingBulk, setIsProcessingBulk] = useState(false);
-  const [isScanning, setIsScanning] = useState(false);
 
   // Filter State
   const [showDateDropdown, setShowDateDropdown] = useState(false);
@@ -936,25 +945,6 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
     }
   };
 
-  // Rescan - trigger full scan for current user
-  const handleRescan = async () => {
-    if (!confirm('🔄 Запустити повне сканування?\n\nСистема просканує всі ваші URL (FINN + NAV) та проаналізує нові вакансії.')) return;
-
-    setIsScanning(true);
-    try {
-      const result = await api.settings.triggerUserScan();
-      if (result.success) {
-        alert(`✅ Сканування завершено!\n\nЗнайдено: ${result.jobsFound || 0}\nПроаналізовано: ${result.analyzed || 0}`);
-        if (onRefresh) onRefresh();
-      } else {
-        alert(`❌ Помилка сканування: ${result.message}`);
-      }
-    } catch (e: any) {
-      alert(`❌ Помилка: ${e.message}`);
-    }
-    setIsScanning(false);
-  };
-
   // Re-analyze selected jobs (including already analyzed)
   const jobsToReanalyze = useMemo(() => {
     return filteredJobs.filter(job =>
@@ -1392,17 +1382,6 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
         </div>
 
         <div className="flex items-center gap-2 pl-0 md:pl-3 md:border-l border-slate-200 justify-between md:justify-start w-full md:w-auto">
-          {/* Rescan button - always visible */}
-          <button
-            onClick={handleRescan}
-            disabled={isScanning || isProcessingBulk}
-            title={t('jobs.rescan')}
-            className="flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700 transition-all disabled:opacity-50"
-          >
-            {isScanning ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}
-            <span className="hidden md:inline">{t('jobs.rescan')}</span>
-          </button>
-
           {selectedIds.size > 0 ? (
             <>
               <button
@@ -1415,40 +1394,41 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
                  {isProcessingBulk ? <Loader2 className="animate-spin" size={14} /> : <Download size={14} />}
                  <span className="inline">{t('jobs.extract')}</span> {jobsToExtract.length > 0 && <span className="bg-white/20 px-1.5 rounded text-xs">{jobsToExtract.length}</span>}
               </button>
+              <HelpTip text={t('jobs.help.extract')} />
 
               {/* Re-analyze button (for selected jobs with descriptions) */}
               <button
                 onClick={handleReanalyze}
                 disabled={isProcessingBulk || jobsToReanalyze.length === 0}
-                title={t('jobs.reanalyze')}
                 className={`flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
                    jobsToReanalyze.length > 0 ? 'bg-violet-600 text-white hover:bg-violet-700' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
               >
                  {isProcessingBulk ? <Loader2 className="animate-spin" size={14} /> : <Brain size={14} />}
                  <span className="hidden md:inline">{t('jobs.reanalyze')}</span> {jobsToReanalyze.length > 0 && <span className="bg-white/20 px-1.5 rounded text-xs">{jobsToReanalyze.length}</span>}
               </button>
+              <HelpTip text={t('jobs.help.reanalyze')} />
 
               <button
                 onClick={handleCheckEnkelSoknad}
                 disabled={isProcessingBulk || jobsToCheckEnkel.length === 0}
-                title="Check application form type"
                 className={`flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
                    jobsToCheckEnkel.length > 0 ? 'bg-cyan-600 text-white hover:bg-cyan-700' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
               >
                  {isProcessingBulk ? <Loader2 className="animate-spin" size={14} /> : <Zap size={14} />}
-                 <span className="hidden md:inline">Тип подачі</span> {jobsToCheckEnkel.length > 0 && <span className="bg-white/20 px-1.5 rounded text-xs">{jobsToCheckEnkel.length}</span>}
+                 <span className="hidden md:inline">{t('jobs.filters.formAll').split(':')[0]}</span> {jobsToCheckEnkel.length > 0 && <span className="bg-white/20 px-1.5 rounded text-xs">{jobsToCheckEnkel.length}</span>}
               </button>
+              <HelpTip text={t('jobs.help.formType')} />
 
               <button
                 onClick={handleBulkAutoApply}
                 disabled={isProcessingBulk || jobsToAutoApply.length === 0}
-                title="Auto-Apply via Skyvern (external forms)"
                 className={`flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
                    jobsToAutoApply.length > 0 ? 'bg-gradient-to-r from-green-600 to-emerald-600 text-white hover:from-green-700 hover:to-emerald-700 shadow-sm' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
               >
                  {isProcessingBulk ? <Loader2 className="animate-spin" size={14} /> : <Rocket size={14} />}
                  <span className="hidden md:inline">Auto-Apply</span> {jobsToAutoApply.length > 0 && <span className="bg-white/20 px-1.5 rounded text-xs">{jobsToAutoApply.length}</span>}
               </button>
+              <HelpTip text={t('jobs.help.autoApply')} />
 
             </>
           ) : (
