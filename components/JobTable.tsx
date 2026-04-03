@@ -632,6 +632,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
     setExpandedJobId(job.id);
     navigate({ pathname: `/jobs/${job.id}`, search: searchParams.toString() }, { replace: true });
     setApplicationData(null);
+    setPendingManualSend(false);
     
     const app = await api.getApplication(job.id);
     if (app) {
@@ -715,6 +716,8 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
       }
   };
 
+  const [pendingManualSend, setPendingManualSend] = useState(false);
+
   const handleMarkAsSent = async () => {
       if (!applicationData) return;
       setIsSending(true);
@@ -722,6 +725,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
       setIsSending(false);
       if (result.success) {
           setApplicationData({ ...applicationData, status: 'sent', sent_at: new Date().toISOString() });
+          setPendingManualSend(false);
           if (onRefresh) onRefresh();
       } else {
           alert("Помилка: " + result.message);
@@ -1125,13 +1129,25 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
                         {renderStatusBadge(applicationData)}
                         {applicationData.skyvern_metadata?.task_id && <a href={`http://localhost:8080/tasks/${applicationData.skyvern_metadata.task_id}`} target="_blank" rel="noreferrer" className="text-blue-600 hover:text-blue-800 text-xs font-medium flex items-center gap-1"><Eye size={14}/> {t('jobs.actions.viewTask')}</a>}
                         {applicationData.status === 'draft' && <button onClick={handleApproveApp} disabled={isApproving} className="text-xs bg-green-600 text-white px-3 py-1.5 rounded hover:bg-green-700 flex items-center gap-1 shadow-sm">{isApproving ? <Loader2 size={12} className="animate-spin"/> : <CheckCircle size={12}/>} {t('jobs.actions.approve')}</button>}
-                        {applicationData.status === 'approved' && <>
+                        {applicationData.status === 'approved' && !pendingManualSend && <>
                             <button onClick={handleSendSkyvern} disabled={isSending} className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700 flex items-center gap-1 shadow-sm">{isSending ? <Loader2 size={12} className="animate-spin"/> : <Rocket size={12}/>} {t('jobs.actions.sendSkyvern')}</button>
-                            <button onClick={handleMarkAsSent} disabled={isSending} className="text-xs bg-green-600 text-white px-3 py-1.5 rounded hover:bg-green-700 flex items-center gap-1 shadow-sm">{isSending ? <Loader2 size={12} className="animate-spin"/> : <CheckCircle size={12}/>} ✅ Відправлено вручну</button>
+                            <button onClick={() => setPendingManualSend(true)} className="text-xs bg-amber-500 text-white px-3 py-1.5 rounded hover:bg-amber-600 flex items-center gap-1 shadow-sm"><ExternalLink size={12}/> {t('jobs.actions.sendManually')}</button>
                         </>}
-                        {(applicationData.status === 'failed' || applicationData.status === 'sent' || applicationData.status === 'manual_review') &&
-                            <button onClick={handleRetrySend} disabled={isSending} className="text-xs bg-orange-500 text-white px-3 py-1.5 rounded hover:bg-orange-600 flex items-center gap-1 shadow-sm" title="Reset to Approved">
-                                <RefreshCw size={12}/> {t('jobs.actions.retry')}
+                        {applicationData.status === 'approved' && pendingManualSend &&
+                            <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-lg">
+                                <span className="text-xs text-amber-700">{t('jobs.actions.sendManually')}?</span>
+                                <button onClick={handleMarkAsSent} disabled={isSending} className="text-xs bg-green-600 text-white px-3 py-1.5 rounded hover:bg-green-700 flex items-center gap-1 shadow-sm">{isSending ? <Loader2 size={12} className="animate-spin"/> : <CheckCircle size={12}/>} {t('jobs.actions.confirmSent')}</button>
+                                <button onClick={() => setPendingManualSend(false)} className="text-xs text-slate-500 hover:text-slate-700 px-2 py-1"><X size={12}/></button>
+                            </div>
+                        }
+                        {(applicationData.status === 'failed' || applicationData.status === 'manual_review') &&
+                            <button onClick={handleRetrySend} disabled={isSending} className="text-xs bg-orange-500 text-white px-3 py-1.5 rounded hover:bg-orange-600 flex items-center gap-1 shadow-sm">
+                                <RotateCw size={12}/> {t('jobs.actions.resetStatus')}
+                            </button>
+                        }
+                        {applicationData.status === 'sent' &&
+                            <button onClick={handleRetrySend} disabled={isSending} className="text-xs bg-slate-400 text-white px-3 py-1.5 rounded hover:bg-slate-500 flex items-center gap-1 shadow-sm">
+                                <RotateCw size={12}/> {t('jobs.actions.resetStatus')}
                             </button>
                         }
                         {/* FINN Easy Apply Button */}

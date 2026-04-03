@@ -127,7 +127,9 @@ export const translations = {
         writeSoknad: 'Write',
         approve: 'Approve',
         sendSkyvern: 'Send Skyvern',
-        retry: 'Retry',
+        resetStatus: 'Reset status',
+        sendManually: 'Send manually',
+        confirmSent: 'Yes, sent!',
         viewTask: 'Task'
       },
       sections: {
@@ -361,7 +363,9 @@ export const translations = {
         writeSoknad: 'Skriv',
         approve: 'Godkjenn',
         sendSkyvern: 'Send Skyvern',
-        retry: 'Prøv igjen',
+        resetStatus: 'Tilbakestill',
+        sendManually: 'Send manuelt',
+        confirmSent: 'Ja, sendt!',
         viewTask: 'Oppgave'
       },
       sections: {
@@ -595,7 +599,9 @@ export const translations = {
         writeSoknad: 'Написати',
         approve: 'Схвалити',
         sendSkyvern: 'Надіслати Skyvern',
-        retry: 'Повторити',
+        resetStatus: 'Скинути статус',
+        sendManually: 'Відправити вручну',
+        confirmSent: 'Так, відправлено!',
         viewTask: 'Завдання'
       },
       sections: {
