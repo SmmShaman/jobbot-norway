@@ -203,74 +203,88 @@ Location: {job.get('location', 'Unknown')}
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
 
-    try:
-        response = await client.post(
-            url,
-            headers={
-                'Content-Type': 'application/json'
-            },
-            json={
-                'contents': [
-                    {
-                        'role': 'user',
-                        'parts': [{'text': full_prompt}]
-                    }
-                ],
-                'systemInstruction': {
-                    'parts': [{'text': f'You are a helpful HR assistant that outputs strictly valid JSON. Write all text content in {lang_full} language.'}]
+    max_retries = 3
+    for attempt in range(max_retries + 1):
+        try:
+            response = await client.post(
+                url,
+                headers={
+                    'Content-Type': 'application/json'
                 },
-                'generationConfig': {
-                    'temperature': 0.3,
-                    'responseMimeType': 'application/json'
-                }
-            },
-            timeout=60.0
-        )
+                json={
+                    'contents': [
+                        {
+                            'role': 'user',
+                            'parts': [{'text': full_prompt}]
+                        }
+                    ],
+                    'systemInstruction': {
+                        'parts': [{'text': f'You are a helpful HR assistant that outputs strictly valid JSON. Write all text content in {lang_full} language.'}]
+                    },
+                    'generationConfig': {
+                        'temperature': 0.3,
+                        'responseMimeType': 'application/json'
+                    }
+                },
+                timeout=60.0
+            )
 
-        if response.status_code != 200:
-            raise Exception(f"Gemini API error: {response.status_code} - {response.text}")
+            # Retry on 503/429 with exponential backoff
+            if response.status_code in (503, 429) and attempt < max_retries:
+                wait = 2 ** attempt * 3  # 3s, 6s, 12s
+                print(f"   ⏳ Gemini {response.status_code}, retry {attempt + 1}/{max_retries} in {wait}s...")
+                await asyncio.sleep(wait)
+                continue
 
-        data = response.json()
+            if response.status_code != 200:
+                raise Exception(f"Gemini API error: {response.status_code} - {response.text}")
 
-        # Extract text from Gemini response
-        candidates = data.get('candidates', [])
-        if not candidates:
-            raise Exception("No candidates in Gemini response")
+            data = response.json()
 
-        text_content = candidates[0].get('content', {}).get('parts', [{}])[0].get('text', '')
-        content = json.loads(text_content)
+            # Extract text from Gemini response
+            candidates = data.get('candidates', [])
+            if not candidates:
+                raise Exception("No candidates in Gemini response")
 
-        usage_metadata = data.get('usageMetadata', {})
+            text_content = candidates[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+            content = json.loads(text_content)
 
-        # Validate aura and radar
-        aura = validate_aura(content.get('aura'))
-        radar = validate_radar(content.get('radar'))
+            usage_metadata = data.get('usageMetadata', {})
 
-        # Calculate cost
-        tokens_in = usage_metadata.get('promptTokenCount', 0)
-        tokens_out = usage_metadata.get('candidatesTokenCount', 0)
-        cost = (tokens_in * PRICE_INPUT) + (tokens_out * PRICE_OUTPUT)
+            # Validate aura and radar
+            aura = validate_aura(content.get('aura'))
+            radar = validate_radar(content.get('radar'))
 
-        return {
-            'success': True,
-            'score': content.get('score', 0),
-            'analysis': content.get('analysis', ''),
-            'tasks': content.get('tasks', ''),
-            'requirements': content.get('requirements', ''),
-            'offers': content.get('offers', ''),
-            'aura': aura,
-            'radar': radar,
-            'cost': cost,
-            'tokens_in': tokens_in,
-            'tokens_out': tokens_out
-        }
+            # Calculate cost
+            tokens_in = usage_metadata.get('promptTokenCount', 0)
+            tokens_out = usage_metadata.get('candidatesTokenCount', 0)
+            cost = (tokens_in * PRICE_INPUT) + (tokens_out * PRICE_OUTPUT)
 
-    except asyncio.TimeoutError:
-        return {'success': False, 'error': 'Timeout (60s)'}
-    except json.JSONDecodeError as e:
-        return {'success': False, 'error': f'JSON parse error: {e}'}
-    except Exception as e:
-        return {'success': False, 'error': str(e)}
+            return {
+                'success': True,
+                'score': content.get('score', 0),
+                'analysis': content.get('analysis', ''),
+                'tasks': content.get('tasks', ''),
+                'requirements': content.get('requirements', ''),
+                'offers': content.get('offers', ''),
+                'aura': aura,
+                'radar': radar,
+                'cost': cost,
+                'tokens_in': tokens_in,
+                'tokens_out': tokens_out
+            }
+
+        except asyncio.TimeoutError:
+            if attempt < max_retries:
+                wait = 2 ** attempt * 3
+                print(f"   ⏳ Timeout, retry {attempt + 1}/{max_retries} in {wait}s...")
+                await asyncio.sleep(wait)
+                continue
+            return {'success': False, 'error': f'Timeout after {max_retries + 1} attempts'}
+        except json.JSONDecodeError as e:
+            return {'success': False, 'error': f'JSON parse error: {e}'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
 
 
 async def send_job_card(
@@ -389,21 +403,29 @@ async def generate_soknad_via_api(
 ) -> dict:
     """Call generate_application Edge Function to create søknad"""
     url = f"{SUPABASE_URL}/functions/v1/generate_application"
-    try:
-        response = await client.post(
-            url,
-            headers={
-                'Authorization': f'Bearer {SUPABASE_KEY}',
-                'Content-Type': 'application/json'
-            },
-            json={'job_id': job_id, 'user_id': user_id},
-            timeout=60.0
-        )
-        if response.status_code == 200:
-            return response.json()
-        return {'success': False, 'message': f'HTTP {response.status_code}'}
-    except Exception as e:
-        return {'success': False, 'message': str(e)}
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            response = await client.post(
+                url,
+                headers={
+                    'Authorization': f'Bearer {SUPABASE_KEY}',
+                    'Content-Type': 'application/json'
+                },
+                json={'job_id': job_id, 'user_id': user_id},
+                timeout=60.0
+            )
+            if response.status_code == 200:
+                return response.json()
+            # Retry on 503/429 (Gemini overload propagated through Edge Function)
+            if response.status_code in (503, 429) and attempt < max_retries:
+                wait = 2 ** attempt * 3
+                print(f"   ⏳ Søknad API {response.status_code}, retry {attempt + 1}/{max_retries} in {wait}s...")
+                await asyncio.sleep(wait)
+                continue
+            return {'success': False, 'message': f'Gemini API returned error: {response.status_code} - {response.text}'}
+        except Exception as e:
+            return {'success': False, 'message': str(e)}
 
 
 async def send_auto_soknad_card(
