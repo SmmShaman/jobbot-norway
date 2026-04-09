@@ -28,13 +28,13 @@ load_dotenv()
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_SERVICE_KEY')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-GEMINI_MODEL = 'gemini-2.5-pro'
+GEMINI_MODEL = 'gemini-2.5-flash'  # Switched from 2.5-pro on 2026-04-09: Google removed pro from Free tier on 2026-04-01 (see GEMINI_API_BRIEFING.md)
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_TECH_TOKEN = os.environ.get('TELEGRAM_TECH_BOT_TOKEN')
 
-# Pricing (Gemini 2.5 Pro - approximate)
-PRICE_INPUT = 1.25 / 1_000_000   # $1.25 per 1M tokens
-PRICE_OUTPUT = 10.00 / 1_000_000  # $10.00 per 1M tokens
+# Pricing (Gemini 2.5 Flash)
+PRICE_INPUT = 0.30 / 1_000_000   # $0.30 per 1M tokens
+PRICE_OUTPUT = 2.50 / 1_000_000  # $2.50 per 1M tokens
 
 # Aura color mapping
 AURA_COLORS = {
