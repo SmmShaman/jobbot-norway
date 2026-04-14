@@ -16,7 +16,10 @@ export const ClientProfilePage: React.FC = () => {
       setLoading(true);
       const cost = await api.getTotalCost();
       // Simple way to get job count for this user
-      const jobs = await api.getJobs();
+      // Load last 2 months for fast page load
+      const sinceDate = new Date();
+      sinceDate.setMonth(sinceDate.getMonth() - 2);
+      const jobs = await api.getJobs(sinceDate.toISOString());
       setStats({ totalCost: cost, totalJobs: jobs.length });
       setLoading(false);
     };

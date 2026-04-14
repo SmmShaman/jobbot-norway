@@ -279,7 +279,7 @@ export const api = {
     };
   },
 
-  getJobs: async (): Promise<Job[]> => {
+  getJobs: async (sinceDate?: string): Promise<Job[]> => {
     try {
       // Get current user for multi-user isolation
       const { data: { user } } = await supabase.auth.getUser();
@@ -303,6 +303,11 @@ export const api = {
           .eq('user_id', user.id)
           .order('created_at', { ascending: false })
           .limit(PAGE_SIZE);
+
+        // Server-side date filter to reduce payload
+        if (sinceDate) {
+          query = query.gte('created_at', sinceDate);
+        }
 
         if (cursor) {
           query = query.lte('created_at', cursor);

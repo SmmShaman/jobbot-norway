@@ -167,6 +167,7 @@ export const JobsPage: React.FC<JobsPageProps> = ({ setSidebarCollapsed }) => {
   const { t } = useLanguage();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadAllJobs, setLoadAllJobs] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scanSchedule, setScanSchedule] = useState<ScanScheduleInfo | null>(null);
   const [isExporting, setIsExporting] = useState(false);
@@ -592,7 +593,15 @@ export const JobsPage: React.FC<JobsPageProps> = ({ setSidebarCollapsed }) => {
         if (!isBackgroundUpdate) setLoading(true);
         console.log("JobsPage: Fetching jobs from API...");
 
-        const data = await api.getJobs();
+        // Default: load last 2 months for fast initial load
+        let sinceDate: string | undefined;
+        if (!loadAllJobs) {
+          const d = new Date();
+          d.setMonth(d.getMonth() - 2);
+          sinceDate = d.toISOString();
+        }
+
+        const data = await api.getJobs(sinceDate);
         console.log("JobsPage: Received jobs:", data.length);
 
         // Critical Fix: Only update state if data is a valid array.
@@ -607,7 +616,7 @@ export const JobsPage: React.FC<JobsPageProps> = ({ setSidebarCollapsed }) => {
     } finally {
         if (!isBackgroundUpdate) setLoading(false);
     }
-  }, []);
+  }, [loadAllJobs]);
 
   const handleRescan = async () => {
     if (!confirm(t('jobs.help.rescan'))) return;
@@ -652,7 +661,20 @@ export const JobsPage: React.FC<JobsPageProps> = ({ setSidebarCollapsed }) => {
                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
             </span>
           </h2>
-          <p className="text-slate-500">Manage and track your opportunities.</p>
+          <div className="flex items-center gap-3 mt-1">
+            <p className="text-slate-500">Manage and track your opportunities.</p>
+            <button
+              onClick={() => setLoadAllJobs(prev => !prev)}
+              className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                loadAllJobs
+                  ? 'bg-slate-100 text-slate-600 border-slate-300 hover:bg-slate-200'
+                  : 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
+              }`}
+            >
+              {loadAllJobs ? t('jobs.showingAll') : t('jobs.showingRecent')}
+              {!loadAllJobs && <span className="ml-1 text-blue-500">&#8594; {t('jobs.loadAllJobs')}</span>}
+            </button>
+          </div>
 
           {/* Scan Schedule Info */}
           {scanSchedule && (

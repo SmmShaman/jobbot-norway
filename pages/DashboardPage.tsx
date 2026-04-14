@@ -45,7 +45,10 @@ export const DashboardPage: React.FC = () => {
   const fetchData = async (isBackgroundUpdate = false) => {
     if (!isBackgroundUpdate) setLoading(true);
     try {
-        const data = await api.getJobs();
+        // Load last 2 months for fast dashboard load
+        const sinceDate = new Date();
+        sinceDate.setMonth(sinceDate.getMonth() - 2);
+        const data = await api.getJobs(sinceDate.toISOString());
         const cost = await api.getTotalCost();
         
         // Ensure data is valid before setting state to avoid crashes
