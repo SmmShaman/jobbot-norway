@@ -1100,8 +1100,38 @@ serve(async (req: Request) => {
       }
     }
 
-    // SECOND: Only check for "Enkel søknad" if NO "Søk her" button was found
-    if (!hasSokHerButton) {
+    // PRE-CHECK: Detect external apply links inside Shadow DOM templates (invisible to cheerio)
+    // FINN wraps the real apply button in <template shadowrootmode="open"> which cheerio can't see.
+    // Look for known external patterns in raw HTML before falling back to "Enkel søknad" detection.
+    if (!externalApplyUrl) {
+      const shadowApplyMatch = html.match(/href=['"](https?:\/\/easyapply\.jobs\/[^'"]+)['"]/);
+      if (!shadowApplyMatch) {
+        // Also check for other known external apply patterns inside shadow DOM templates
+        const templateMatch = html.match(/id=['"]job-apply-button['"][^>]*href=['"](https?:\/\/[^'"]+)['"]/);
+        if (templateMatch && isExternalApplyUrl(templateMatch[1])) {
+          externalApplyUrl = templateMatch[1];
+          applicationFormType = 'external_form';
+          console.log(`🔗 Found external apply URL inside Shadow DOM: ${externalApplyUrl}`);
+        }
+      } else {
+        externalApplyUrl = shadowApplyMatch[1];
+        applicationFormType = 'external_form';
+        console.log(`🔗 Found easyapply.jobs URL inside Shadow DOM: ${externalApplyUrl}`);
+      }
+
+      // Also detect data-job-application-type="external" which means it's NOT Enkel søknad
+      if (!externalApplyUrl && html.includes('data-job-application-type') && html.includes('"external"')) {
+        const extBtnMatch = html.match(/href=['"](https?:\/\/[^'"]+)['"][^>]*data-job-application-type/);
+        if (extBtnMatch && isExternalApplyUrl(extBtnMatch[1])) {
+          externalApplyUrl = extBtnMatch[1];
+          applicationFormType = 'external_form';
+          console.log(`🔗 Found external apply URL from data attribute: ${externalApplyUrl}`);
+        }
+      }
+    }
+
+    // SECOND: Only check for "Enkel søknad" if NO "Søk her" button AND no external URL was found
+    if (!hasSokHerButton && !externalApplyUrl) {
       const enkelSoknadSelectors = [
         'button:contains("Enkel søknad")',
         'a:contains("Enkel søknad")',
