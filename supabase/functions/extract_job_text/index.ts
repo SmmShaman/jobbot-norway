@@ -11,6 +11,17 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+// Helper: Check if URL is an actual external application form (not an aggregator page)
+function isExternalApplyUrl(url: string): boolean {
+  if (!url || !url.startsWith('http')) return false;
+  const lower = url.toLowerCase();
+  // Reject aggregator/intermediate pages — these are NOT final application forms
+  if (lower.includes('finn.no') && !lower.includes('finn.no/job/apply')) return false;
+  if (lower.includes('arbeidsplassen.nav.no')) return false;
+  if (lower.includes('nav.no/stillinger')) return false;
+  return true;
+}
+
 // Helper: Extract domain from URL
 function extractDomain(url: string): string {
   try {
@@ -949,10 +960,12 @@ serve(async (req: Request) => {
           hasEnkelSoknad = true;
           applicationFormType = 'finn_easy';
           console.log(`✅ NAV job uses FINN Enkel Søknad: ${externalApplyUrl}`);
-        } else if (appUrl.startsWith('http')) {
+        } else if (isExternalApplyUrl(appUrl)) {
           externalApplyUrl = appUrl;
           applicationFormType = 'external_form';
           console.log(`🔗 NAV job uses external form: ${externalApplyUrl}`);
+        } else {
+          console.log(`⚠️ NAV: Rejected intermediate URL: ${appUrl}`);
         }
       }
 
@@ -1031,10 +1044,12 @@ serve(async (req: Request) => {
                 hasEnkelSoknad = true;
                 applicationFormType = 'finn_easy';
                 console.log(`✅ NAV __NEXT_DATA__: FINN apply URL = "${externalApplyUrl}"`);
-              } else if (appUrl.startsWith('http')) {
+              } else if (isExternalApplyUrl(appUrl)) {
                 externalApplyUrl = appUrl;
                 applicationFormType = 'external_form';
                 console.log(`🔗 NAV __NEXT_DATA__: External apply URL = "${externalApplyUrl}"`);
+              } else {
+                console.log(`⚠️ NAV __NEXT_DATA__: Rejected intermediate URL: ${appUrl}`);
               }
             }
           }
@@ -1071,9 +1086,11 @@ serve(async (req: Request) => {
               hasEnkelSoknad = true;
               applicationFormType = 'finn_easy';
               console.log(`✅ Cross-platform FINN Enkel Søknad: ${externalApplyUrl}`);
-            } else if (!href.includes('finn.no')) {
+            } else if (isExternalApplyUrl(href)) {
               externalApplyUrl = href;
               console.log(`🔗 External apply URL: ${externalApplyUrl}`);
+            } else {
+              console.log(`⚠️ Rejected intermediate URL from button: ${href}`);
             }
           }
           break;
@@ -1150,7 +1167,7 @@ serve(async (req: Request) => {
           const links = $(section).find('a[href^="http"]');
           links.each((_, link) => {
             const href = $(link).attr('href') || '';
-            if (href && !href.includes('finn.no')) {
+            if (isExternalApplyUrl(href)) {
               hasExternalLink = true;
               return false; // break
             }
@@ -1254,7 +1271,7 @@ serve(async (req: Request) => {
             const text = el.text().trim();
             console.log(`🔍 Found apply element: "${text}" with href: ${href}`);
 
-            if (href && href.startsWith('http') && !href.includes('finn.no')) {
+            if (href && isExternalApplyUrl(href)) {
               externalApplyUrl = href;
               console.log(`🔗 Found external apply URL from FINN button: ${externalApplyUrl}`);
               break;
@@ -1279,7 +1296,7 @@ serve(async (req: Request) => {
             href.toLowerCase().includes(domain)
           );
 
-          if (href.startsWith('http') && !href.includes('finn.no') && isRecruitmentSite) {
+          if (isExternalApplyUrl(href) && isRecruitmentSite) {
             externalApplyUrl = href;
             console.log(`🔗 Found recruitment site URL: ${externalApplyUrl}`);
             return false; // break
@@ -1300,7 +1317,7 @@ serve(async (req: Request) => {
 
           if (isApplyButton) {
             // Try to extract URL from href or onclick
-            if (href.startsWith('http') && !href.includes('finn.no')) {
+            if (isExternalApplyUrl(href)) {
               externalApplyUrl = href;
               console.log(`🔗 Found apply URL from button text: ${externalApplyUrl}`);
               return false;
