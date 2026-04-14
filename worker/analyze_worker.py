@@ -264,6 +264,7 @@ Location: {job.get('location', 'Unknown')}
             return {
                 'success': True,
                 'score': content.get('score', 0),
+                'position_uk': content.get('position_uk', ''),
                 'analysis': content.get('analysis', ''),
                 'tasks': content.get('tasks', ''),
                 'requirements': content.get('requirements', ''),
