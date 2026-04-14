@@ -86,15 +86,17 @@ serve(async (req: Request) => {
             const currentUtcHour = now.getUTCHours();
             const currentUtcMinutes = now.getUTCMinutes();
 
-            // GitHub Actions cron can run slightly before the hour boundary (e.g., 12:59:45 instead of 13:00)
-            // Add buffer: if minutes >= 55, also accept scheduledHour = currentHour + 1
+            // GitHub Actions cron is unreliable — can run 0-60 min late or slightly early.
+            // Accept: exact hour match, previous hour (late run), or near-boundary (early run).
+            const prevHour = (currentUtcHour - 1 + 24) % 24;
             const nextHour = (currentUtcHour + 1) % 24;
             const isNearHourBoundary = currentUtcMinutes >= 55;
             const hourMatches = currentUtcHour === scheduledHour ||
+                               prevHour === scheduledHour ||
                                (isNearHourBoundary && nextHour === scheduledHour);
 
             if (!hourMatches) {
-                log(`⏰ Skipping user ${userId}: Current time (${currentUtcHour}:${currentUtcMinutes.toString().padStart(2, '0')} UTC) doesn't match scheduled hour (${scheduledHour} UTC)`);
+                log(`⏰ Skipping user ${userId}: Current time (${currentUtcHour}:${currentUtcMinutes.toString().padStart(2, '0')} UTC) doesn't match scheduled hour (${scheduledHour} UTC, ±1h tolerance)`);
                 continue;
             }
             log(`✅ Time match for user ${userId}! Running scheduled scan (current: ${currentUtcHour}:${currentUtcMinutes.toString().padStart(2, '0')} UTC, scheduled: ${scheduledHour}:00 UTC)`);
