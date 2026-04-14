@@ -167,6 +167,7 @@ const mapJob = (job: any): Job => {
             color: job.analysis_metadata.aura.color || AURA_COLOR_MAP[job.analysis_metadata.aura.status] || AURA_COLOR_MAP['Neutral'],
             tags: job.analysis_metadata.aura.tags || []
         } : undefined,
+        position_uk: job.analysis_metadata?.position_uk || undefined,
         radarData: job.analysis_metadata?.radar ? [
             { subject: 'Tech Stack', A: job.analysis_metadata.radar.tech_stack || 0, fullMark: 100 },
             { subject: 'Soft Skills', A: job.analysis_metadata.radar.soft_skills || 0, fullMark: 100 },

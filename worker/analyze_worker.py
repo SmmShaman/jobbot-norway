@@ -99,6 +99,7 @@ If the target language is English, use "❌ Cons:" and "✅ Pros:".
 OUTPUT FORMAT (JSON ONLY):
 {
   "score": number (0-100),
+  "position_uk": "string (job title/position translated to Ukrainian, short — e.g. 'Менеджер з продажу', 'Водій', 'Бізнес-контролер')",
   "analysis": "string (structured cons/pros format as described above)",
   "tasks": "string (bullet point list of duties/responsibilities)",
   "requirements": "string (bullet point list of required qualifications)",
@@ -570,7 +571,8 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                             'aura': result['aura'],
                             'radar': result['radar'],
                             'requirements': result.get('requirements', ''),
-                            'offers': result.get('offers', '')
+                            'offers': result.get('offers', ''),
+                            'position_uk': result.get('position_uk', '')
                         },
                         'status': 'ANALYZED',
                         'analyzed_at': datetime.utcnow().isoformat(),

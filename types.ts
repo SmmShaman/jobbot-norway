@@ -49,6 +49,7 @@ export interface Job {
   // Cyberpunk Features
   aura?: Aura;
   radarData?: RadarMetric[];
+  position_uk?: string;
 }
 
 export interface Application {

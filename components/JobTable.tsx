@@ -1540,10 +1540,9 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
                     <td className="px-4 py-4">
                         <span className="font-medium text-slate-900 block flex items-center gap-2">
                             {job.title}
-                            {job.aura && (
-                                <span className={`text-[10px] px-1.5 py-0.5 rounded uppercase font-bold border flex items-center gap-1`} style={{ color: job.aura.color, borderColor: job.aura.color, backgroundColor: `${job.aura.color}15` }}>
-                                    {job.aura.status === 'Toxic' ? <Flame size={10}/> : job.aura.status === 'Growth' ? <Zap size={10}/> : <Shield size={10}/>}
-                                    {job.aura.status}
+                            {job.position_uk && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-amber-50 text-amber-700 border border-amber-200 whitespace-nowrap">
+                                    {job.position_uk}
                                 </span>
                             )}
                         </span>
@@ -1726,10 +1725,9 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
                                   {isDeadlineExpired(job) ? '🔴' : isEstimatedDeadline(job.deadline) ? '⚡' : '📅'} {formatDeadline(job.deadline)}
                               </span>
                           )}
-                          {job.aura && (
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded uppercase font-bold border flex items-center gap-1 w-fit`} style={{ color: job.aura.color, borderColor: job.aura.color, backgroundColor: `${job.aura.color}15` }}>
-                                  {job.aura.status === 'Toxic' ? <Flame size={10}/> : job.aura.status === 'Growth' ? <Zap size={10}/> : <Shield size={10}/>}
-                                  {job.aura.status}
+                          {job.position_uk && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-amber-50 text-amber-700 border border-amber-200 w-fit">
+                                  {job.position_uk}
                               </span>
                           )}
                           {job.application_form_type === 'finn_easy' ? (
