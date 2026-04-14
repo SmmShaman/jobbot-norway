@@ -611,8 +611,8 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                 else:
                     print(f"   ❌ {job['title'][:40]} | Error: {result['error']}")
 
-                # Rate limiting for Gemini API
-                await asyncio.sleep(1.0)
+                # Rate limiting for Gemini API (Free tier: 5 RPM = 12s between requests)
+                await asyncio.sleep(13.0)
 
             # Auto-søknad summary for this user (sent to tech bot)
             if auto_soknad and auto_soknad_count > 0 and chat_id:

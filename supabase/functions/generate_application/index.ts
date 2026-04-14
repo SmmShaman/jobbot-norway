@@ -1,5 +1,5 @@
 
-const VERSION_STAMP = '2026-03-29-force-redeploy';
+const VERSION_STAMP = '2026-04-14-anthropic';
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
 
@@ -10,11 +10,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// --- PRICING CONFIGURATION (USD per 1M tokens) ---
-const PRICE_PER_1M_INPUT = 0.15;
-const PRICE_PER_1M_OUTPUT = 3.50;
+// --- PRICING CONFIGURATION (Claude Sonnet 4.6, USD per 1M tokens) ---
+const PRICE_PER_1M_INPUT = 3.00;
+const PRICE_PER_1M_OUTPUT = 15.00;
 
-const GEMINI_MODEL = 'gemini-2.5-flash';
+const ANTHROPIC_MODEL = 'claude-sonnet-4-6';
 
 serve(async (req: Request) => {
   // Handle CORS preflight requests
@@ -30,10 +30,10 @@ serve(async (req: Request) => {
     }
 
     // 1. Check Secrets FIRST
-    const geminiApiKey = Deno.env.get('GEMINI_API_KEY');
+    const anthropicApiKey = Deno.env.get('ANTHROPIC_API_KEY');
 
-    if (!geminiApiKey) {
-      throw new Error("Missing GEMINI_API_KEY secret.");
+    if (!anthropicApiKey) {
+      throw new Error("Missing ANTHROPIC_API_KEY secret.");
     }
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
@@ -99,12 +99,12 @@ serve(async (req: Request) => {
       console.log(`[generate_application] Using default prompt for user ${user_id}`);
     }
 
-    // 6. Call Gemini API
+    // 6. Call Anthropic Claude API
     const systemInstruction = `You are an expert career consultant for the Norwegian job market.
 Your task is to write a "Soknad" (Cover Letter) based on the provided Job Description and Candidate Profile.
 
 OUTPUT FORMAT:
-You must output valid JSON only.
+You must output valid JSON only, with no markdown fences or extra text.
 {
    "soknad_no": "The application text in Norwegian (Bokmal)",
    "translation_uk": "A translation in Ukrainian for the user"
@@ -123,45 +123,49 @@ You must output valid JSON only.
       ${profile.content}
     `;
 
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiApiKey}`;
+    console.log("Sending request to Anthropic API...");
 
-    console.log("Sending request to Gemini API...");
-
-    const response = await fetch(apiUrl, {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': anthropicApiKey,
+        'anthropic-version': '2023-06-01'
+      },
       body: JSON.stringify({
-        contents: [
-          { role: 'user', parts: [{ text: fullPrompt }] }
-        ],
-        systemInstruction: {
-          parts: [{ text: systemInstruction }]
-        },
-        generationConfig: {
-          temperature: 0.7,
-          responseMimeType: 'application/json'
-        }
+        model: ANTHROPIC_MODEL,
+        max_tokens: 4096,
+        temperature: 0.7,
+        system: systemInstruction,
+        messages: [
+          { role: 'user', content: fullPrompt }
+        ]
       })
     });
 
     if (!response.ok) {
        const txt = await response.text();
-       console.error("Gemini API Error:", txt);
-       throw new Error(`Gemini API returned error: ${response.status} - ${txt}`);
+       console.error("Anthropic API Error:", txt);
+       throw new Error(`Anthropic API returned error: ${response.status} - ${txt}`);
     }
 
     const json = await response.json();
 
-    const candidates = json.candidates || [];
-    if (!candidates.length || !candidates[0]?.content?.parts?.[0]?.text) {
-      throw new Error("Invalid response from Gemini API");
+    const textBlock = json.content?.find((b: any) => b.type === 'text');
+    if (!textBlock?.text) {
+      throw new Error("Invalid response from Anthropic API");
     }
 
     let contentObj;
     try {
-      contentObj = JSON.parse(candidates[0].content.parts[0].text);
+      // Strip markdown fences if present
+      let raw = textBlock.text.trim();
+      if (raw.startsWith('```')) {
+        raw = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+      }
+      contentObj = JSON.parse(raw);
     } catch (e) {
-      console.error("Failed to parse AI response as JSON:", candidates[0]?.content?.parts?.[0]?.text);
+      console.error("Failed to parse AI response as JSON:", textBlock.text);
       throw new Error("AI did not return valid JSON. Try again.");
     }
 
@@ -170,10 +174,10 @@ You must output valid JSON only.
     let tokensIn = 0;
     let tokensOut = 0;
 
-    const usageMetadata = json.usageMetadata;
-    if (usageMetadata) {
-        tokensIn = usageMetadata.promptTokenCount || 0;
-        tokensOut = usageMetadata.candidatesTokenCount || 0;
+    const usage = json.usage;
+    if (usage) {
+        tokensIn = usage.input_tokens || 0;
+        tokensOut = usage.output_tokens || 0;
         cost = (tokensIn / 1000000 * PRICE_PER_1M_INPUT) +
                (tokensOut / 1000000 * PRICE_PER_1M_OUTPUT);
     }

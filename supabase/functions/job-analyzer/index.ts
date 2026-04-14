@@ -10,10 +10,10 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const PRICE_PER_1M_INPUT = 1.25;
-const PRICE_PER_1M_OUTPUT = 10.00;
+const PRICE_PER_1M_INPUT = 0.30;
+const PRICE_PER_1M_OUTPUT = 2.50;
 
-const GEMINI_MODEL = 'gemini-2.5-pro';
+const GEMINI_MODEL = 'gemini-2.5-flash';
 
 const DEFAULT_ANALYSIS_PROMPT = `
 You are a Vibe & Fit Scanner for Recruitment.
