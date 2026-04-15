@@ -1624,7 +1624,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
                           title={`Відкрити: ${job.external_apply_url}`}
                         >
                           {getApplyBadge(job.external_apply_url)}
-                          <ExternalLink size={12} className="text-slate-400" />
+                          <span className="text-xs text-blue-600 font-medium">Лінк</span>
                         </a>
                       ) : job.application_form_type === 'external_form' ? (
                         <span className="inline-flex items-center justify-center px-2 py-1 rounded-full bg-green-500 text-white text-xs font-bold" title="External form (no registration)">
