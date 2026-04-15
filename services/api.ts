@@ -1080,6 +1080,20 @@ export const api = {
       delete: async (id: string): Promise<boolean> => {
           const { error } = await supabase.from('site_credentials').delete().eq('id', id);
           return !error;
+      },
+      create: async (siteDomain: string, email: string, password: string): Promise<boolean> => {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (!user) return false;
+          const { error } = await supabase.from('site_credentials').upsert({
+              user_id: user.id,
+              site_domain: siteDomain,
+              site_name: siteDomain.split('.')[0],
+              email,
+              password,
+              status: 'active'
+          }, { onConflict: 'site_domain,email' });
+          if (error) { console.error('[createCredential]', error); return false; }
+          return true;
       }
   },
 

@@ -320,7 +320,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
   // Site credentials state
   const [siteCredentials, setSiteCredentials] = useState<SiteCredential[]>([]);
   const [isLoadingCredentials, setIsLoadingCredentials] = useState(false);
-  const [showPasswords, setShowPasswords] = useState<Set<string>>(new Set());
+  const [newCredDomain, setNewCredDomain] = useState('');
+  const [newCredEmail, setNewCredEmail] = useState('');
+  const [newCredPassword, setNewCredPassword] = useState('');
+  const [isSavingCred, setIsSavingCred] = useState(false);
 
   // Load Active Profile Logic
   useEffect(() => { setActiveTab(initialTab); }, [initialTab]);
@@ -459,12 +462,15 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
       setSiteCredentials(prev => prev.filter(c => c.id !== id));
   };
 
-  const togglePassword = (id: string) => {
-      setShowPasswords(prev => {
-          const next = new Set(prev);
-          if (next.has(id)) next.delete(id); else next.add(id);
-          return next;
-      });
+  const saveNewCredential = async () => {
+      if (!newCredDomain.trim() || !newCredEmail.trim() || !newCredPassword.trim()) return;
+      setIsSavingCred(true);
+      const ok = await api.credentials.create(newCredDomain.trim(), newCredEmail.trim(), newCredPassword.trim());
+      if (ok) {
+          setNewCredDomain(''); setNewCredEmail(''); setNewCredPassword('');
+          await loadCredentials();
+      }
+      setIsSavingCred(false);
   };
 
   const loadTelegramStatus = async () => {
@@ -1132,13 +1138,50 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
                     </div>
                 </div>
 
+                {/* Add new credential form */}
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-6">
+                    <h4 className="font-medium text-slate-700 mb-3 flex items-center gap-2"><Plus size={16}/> Додати логін</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                        <input
+                            type="text"
+                            placeholder="Домен (webcruiter.com)"
+                            value={newCredDomain}
+                            onChange={e => setNewCredDomain(e.target.value)}
+                            className="p-2.5 border border-slate-300 rounded-lg text-sm"
+                        />
+                        <input
+                            type="email"
+                            placeholder="Email"
+                            value={newCredEmail}
+                            onChange={e => setNewCredEmail(e.target.value)}
+                            className="p-2.5 border border-slate-300 rounded-lg text-sm"
+                        />
+                        <div className="flex gap-2">
+                            <input
+                                type="text"
+                                placeholder="Пароль"
+                                value={newCredPassword}
+                                onChange={e => setNewCredPassword(e.target.value)}
+                                className="flex-1 p-2.5 border border-slate-300 rounded-lg text-sm font-mono"
+                            />
+                            <button
+                                onClick={saveNewCredential}
+                                disabled={isSavingCred || !newCredDomain.trim() || !newCredEmail.trim() || !newCredPassword.trim()}
+                                className="bg-blue-600 text-white px-4 rounded-lg hover:bg-blue-700 disabled:opacity-40 flex items-center gap-1.5 text-sm font-medium whitespace-nowrap"
+                            >
+                                {isSavingCred ? <Loader2 className="animate-spin" size={14}/> : <Save size={14}/>} Зберегти
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
                 {isLoadingCredentials ? (
                     <div className="flex justify-center py-20"><Loader2 className="animate-spin text-blue-600" size={32}/></div>
                 ) : siteCredentials.length === 0 ? (
                     <div className="text-center py-16 text-slate-400">
                         <Key size={48} className="mx-auto mb-4 opacity-30"/>
                         <p className="font-medium">Немає збережених облікових даних</p>
-                        <p className="text-sm mt-1">Вони з'являться автоматично після реєстрації на сайтах через бота</p>
+                        <p className="text-sm mt-1">Додайте вручну або вони з'являться автоматично після реєстрації через бота</p>
                     </div>
                 ) : (
                     <div className="overflow-x-auto border border-slate-200 rounded-xl">
@@ -1149,7 +1192,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
                                     <th className="text-left px-4 py-3 font-semibold text-slate-600">Email</th>
                                     <th className="text-left px-4 py-3 font-semibold text-slate-600">Пароль</th>
                                     <th className="text-left px-4 py-3 font-semibold text-slate-600">Статус</th>
-                                    <th className="text-left px-4 py-3 font-semibold text-slate-600">Тип</th>
                                     <th className="text-left px-4 py-3 font-semibold text-slate-600">Оновлено</th>
                                     <th className="px-4 py-3"></th>
                                 </tr>
@@ -1162,7 +1204,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
                                                 <Globe size={14} className="text-slate-400 shrink-0"/>
                                                 <div>
                                                     <div className="font-medium text-slate-800">{cred.site_name || cred.site_domain}</div>
-                                                    <div className="text-xs text-slate-400">{cred.site_domain}</div>
+                                                    {cred.site_name && <div className="text-xs text-slate-400">{cred.site_domain}</div>}
                                                 </div>
                                             </div>
                                         </td>
@@ -1173,11 +1215,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
                                             {cred.password ? (
                                                 <div className="flex items-center gap-1.5">
                                                     <code className="text-xs bg-slate-100 px-2 py-0.5 rounded font-mono">
-                                                        {showPasswords.has(cred.id) ? cred.password : '••••••••'}
+                                                        {cred.password}
                                                     </code>
-                                                    <button onClick={() => togglePassword(cred.id)} className="text-slate-400 hover:text-slate-600 p-0.5">
-                                                        <Eye size={14}/>
-                                                    </button>
                                                     <button
                                                         onClick={() => { navigator.clipboard.writeText(cred.password!); }}
                                                         className="text-slate-400 hover:text-slate-600 p-0.5"
@@ -1199,9 +1238,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
                                             }`}>
                                                 {cred.status}
                                             </span>
-                                        </td>
-                                        <td className="px-4 py-3 text-xs text-slate-500">
-                                            {cred.auth_type === 'magic_link' ? 'Magic Link' : cred.auth_type || 'password'}
                                         </td>
                                         <td className="px-4 py-3 text-xs text-slate-400">
                                             {new Date(cred.updated_at).toLocaleDateString('uk-UA')}
