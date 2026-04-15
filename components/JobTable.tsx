@@ -1645,7 +1645,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
                       )}
                     </td>
                     <td className="px-4 py-4 text-right">
-                        <a href={job.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="inline-block text-slate-400 hover:text-blue-600 p-1"><ExternalLink size={16} /></a>
+                        <a href={job.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs font-medium p-1"><ExternalLink size={14} /> Лінк</a>
                     </td>
                   </tr>
 
@@ -1706,7 +1706,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
                           </div>
                           <div className="flex items-center gap-2">
                               <span>{job.postedDate}</span>
-                              <a href={job.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-slate-400 hover:text-blue-600"><ExternalLink size={14} /></a>
+                              <a href={job.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-0.5 text-blue-600 hover:text-blue-800 text-xs font-medium"><ExternalLink size={12} /> Лінк</a>
                           </div>
                       </div>
                       
