@@ -1127,12 +1127,10 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
                 {applicationData ? (
                     <>
                         {renderStatusBadge(applicationData)}
-                        {applicationData.skyvern_metadata?.task_id && <a href={`http://localhost:8080/tasks/${applicationData.skyvern_metadata.task_id}`} target="_blank" rel="noreferrer" className="text-blue-600 hover:text-blue-800 text-xs font-medium flex items-center gap-1"><Eye size={14}/> {t('jobs.actions.viewTask')}</a>}
                         {applicationData.status === 'draft' && <button onClick={handleApproveApp} disabled={isApproving} className="text-xs bg-green-600 text-white px-3 py-1.5 rounded hover:bg-green-700 flex items-center gap-1 shadow-sm">{isApproving ? <Loader2 size={12} className="animate-spin"/> : <CheckCircle size={12}/>} {t('jobs.actions.approve')}</button>}
-                        {applicationData.status === 'approved' && !pendingManualSend && <>
-                            <button onClick={handleSendSkyvern} disabled={isSending} className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700 flex items-center gap-1 shadow-sm">{isSending ? <Loader2 size={12} className="animate-spin"/> : <Rocket size={12}/>} {t('jobs.actions.sendSkyvern')}</button>
+                        {applicationData.status === 'approved' && !pendingManualSend &&
                             <button onClick={() => setPendingManualSend(true)} className="text-xs bg-amber-500 text-white px-3 py-1.5 rounded hover:bg-amber-600 flex items-center gap-1 shadow-sm"><ExternalLink size={12}/> {t('jobs.actions.sendManually')}</button>
-                        </>}
+                        }
                         {applicationData.status === 'approved' && pendingManualSend &&
                             <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-lg">
                                 <span className="text-xs text-amber-700">{t('jobs.actions.sendManually')}?</span>
