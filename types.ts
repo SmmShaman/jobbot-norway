@@ -258,6 +258,21 @@ export interface AdminStats {
   perUser: { user_id: string; email?: string; jobs: number; applications: number; cost: number }[];
 }
 
+// Site Credentials
+export interface SiteCredential {
+  id: string;
+  site_domain: string;
+  site_name?: string;
+  email?: string;
+  password?: string;
+  status: 'active' | 'needs_verification' | 'verification_failed' | 'login_failed' | 'expired' | 'inactive';
+  auth_type?: 'password' | 'magic_link' | 'oauth' | 'unknown';
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+  last_login_at?: string;
+}
+
 // Export History
 export interface ExportHistory {
   id: string;

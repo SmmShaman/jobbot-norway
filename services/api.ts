@@ -1,6 +1,6 @@
 
 import { supabase } from './supabase';
-import { Job, JobStatus, DashboardStats, CVProfile, Application, UserSettings, KnowledgeBaseItem, SystemLog, AdminUser, RadarMetric, Aura, StructuredProfile, ExportHistory } from '../types';
+import { Job, JobStatus, DashboardStats, CVProfile, Application, UserSettings, KnowledgeBaseItem, SystemLog, AdminUser, RadarMetric, Aura, StructuredProfile, ExportHistory, SiteCredential } from '../types';
 import { Language } from './translations';
 
 // Fallback colors for aura status (in case AI didn't provide color)
@@ -1065,6 +1065,24 @@ export const api = {
       }
   },
 
+  credentials: {
+      getAll: async (): Promise<SiteCredential[]> => {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (!user) return [];
+          const { data, error } = await supabase
+              .from('site_credentials')
+              .select('id, site_domain, site_name, email, password, status, auth_type, notes, created_at, updated_at, last_login_at')
+              .eq('user_id', user.id)
+              .order('site_domain', { ascending: true });
+          if (error) { console.error('[getCredentials]', error); return []; }
+          return data || [];
+      },
+      delete: async (id: string): Promise<boolean> => {
+          const { error } = await supabase.from('site_credentials').delete().eq('id', id);
+          return !error;
+      }
+  },
+
   admin: {
       listUsers: async () => {
            const { data, error } = await supabase.functions.invoke('admin-actions', {
@@ -1100,5 +1118,5 @@ export const api = {
 export const {
     getJobs, getTotalCost, getSystemLogs, extractJobText, analyzeJobs,
     getApplication, generateApplication, approveApplication, sendApplication, retrySend, fillFinnForm, cancelTask,
-    settings, admin, cv, exports, subscribeToChanges
+    settings, admin, cv, exports, credentials, subscribeToChanges
 } = api;

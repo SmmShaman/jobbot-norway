@@ -5,7 +5,7 @@ import {
   Trash2, Play, CheckCircle, AlertCircle, Loader2, Edit2, Plus, Database, Key, ExternalLink, Bot, PenTool, Clock, Zap, BookOpen, Terminal, Eye, X, StickyNote, RefreshCw, Wand2, File, ChevronDown, ChevronUp, Calendar, Files, ScrollText, Download, MessageCircle, Link2, Unlink, Copy, Check, Search
 } from 'lucide-react';
 import { api, generateProfileTextFromJSON } from '../services/api';
-import { CVProfile, KnowledgeBaseItem, StructuredProfile } from '../types';
+import { CVProfile, KnowledgeBaseItem, StructuredProfile, SiteCredential } from '../types';
 import { useLanguage } from '../contexts/LanguageContext';
 import { Language } from '../services/translations';
 import { ProfileEditor } from '../components/ProfileEditor';
@@ -317,6 +317,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [codeCopied, setCodeCopied] = useState(false);
 
+  // Site credentials state
+  const [siteCredentials, setSiteCredentials] = useState<SiteCredential[]>([]);
+  const [isLoadingCredentials, setIsLoadingCredentials] = useState(false);
+  const [showPasswords, setShowPasswords] = useState<Set<string>>(new Set());
+
   // Load Active Profile Logic
   useEffect(() => { setActiveTab(initialTab); }, [initialTab]);
   useEffect(() => {
@@ -325,6 +330,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
     if (activeTab === 'search') { loadSearchUrls(); loadLinkedinSettings(); }
     if (activeTab === 'ai_config') { loadPrompts(); loadAnalysisLanguage(); }
     if (activeTab === 'automation') { loadAutomation(); loadTelegramStatus(); }
+    if (activeTab === 'credentials') { loadCredentials(); }
   }, [activeTab]);
 
   const checkDb = async () => { const status = await api.cv.verifyDatabaseConnection(); setDbStatus(status); };
@@ -438,6 +444,27 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
         setAutoSoknadEnabled(!!settings.auto_soknad_enabled);
         setAutoSoknadMinScore(settings.auto_soknad_min_score ?? 50);
       }
+  };
+
+  const loadCredentials = async () => {
+      setIsLoadingCredentials(true);
+      const data = await api.credentials.getAll();
+      setSiteCredentials(data);
+      setIsLoadingCredentials(false);
+  };
+
+  const deleteCredential = async (id: string) => {
+      if (!confirm('Видалити цей запис?')) return;
+      await api.credentials.delete(id);
+      setSiteCredentials(prev => prev.filter(c => c.id !== id));
+  };
+
+  const togglePassword = (id: string) => {
+      setShowPasswords(prev => {
+          const next = new Set(prev);
+          if (next.has(id)) next.delete(id); else next.add(id);
+          return next;
+      });
   };
 
   const loadTelegramStatus = async () => {
@@ -686,6 +713,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
         { id: 'resume', label: t('settings.tabs.resume'), icon: Upload },
         { id: 'search', label: t('settings.tabs.search'), icon: Globe },
         { id: 'ai_config', label: t('settings.tabs.aiConfig'), icon: Bot },
+        { id: 'credentials', label: 'Credentials', icon: Key },
         { id: 'automation', label: t('settings.tabs.automation'), icon: Zap },
       ].map(tab => (
         <button
@@ -1092,6 +1120,106 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
         )}
 
         {/* --- Automation Tab --- */}
+        {activeTab === 'credentials' && (
+            <div className="animate-fade-in">
+                <div className="flex items-center gap-3 mb-6">
+                    <div className="p-2 rounded-lg bg-amber-100 text-amber-600">
+                        <Key size={24}/>
+                    </div>
+                    <div>
+                        <h3 className="font-bold text-lg text-slate-900">Збережені облікові дані</h3>
+                        <p className="text-sm text-slate-500">Логіни та паролі для сайтів рекрутингу</p>
+                    </div>
+                </div>
+
+                {isLoadingCredentials ? (
+                    <div className="flex justify-center py-20"><Loader2 className="animate-spin text-blue-600" size={32}/></div>
+                ) : siteCredentials.length === 0 ? (
+                    <div className="text-center py-16 text-slate-400">
+                        <Key size={48} className="mx-auto mb-4 opacity-30"/>
+                        <p className="font-medium">Немає збережених облікових даних</p>
+                        <p className="text-sm mt-1">Вони з'являться автоматично після реєстрації на сайтах через бота</p>
+                    </div>
+                ) : (
+                    <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                        <table className="w-full text-sm">
+                            <thead className="bg-slate-50 border-b border-slate-200">
+                                <tr>
+                                    <th className="text-left px-4 py-3 font-semibold text-slate-600">Сайт</th>
+                                    <th className="text-left px-4 py-3 font-semibold text-slate-600">Email</th>
+                                    <th className="text-left px-4 py-3 font-semibold text-slate-600">Пароль</th>
+                                    <th className="text-left px-4 py-3 font-semibold text-slate-600">Статус</th>
+                                    <th className="text-left px-4 py-3 font-semibold text-slate-600">Тип</th>
+                                    <th className="text-left px-4 py-3 font-semibold text-slate-600">Оновлено</th>
+                                    <th className="px-4 py-3"></th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                                {siteCredentials.map(cred => (
+                                    <tr key={cred.id} className="hover:bg-slate-50 transition-colors">
+                                        <td className="px-4 py-3">
+                                            <div className="flex items-center gap-2">
+                                                <Globe size={14} className="text-slate-400 shrink-0"/>
+                                                <div>
+                                                    <div className="font-medium text-slate-800">{cred.site_name || cred.site_domain}</div>
+                                                    <div className="text-xs text-slate-400">{cred.site_domain}</div>
+                                                </div>
+                                            </div>
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <code className="text-xs bg-slate-100 px-2 py-0.5 rounded">{cred.email || '—'}</code>
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            {cred.password ? (
+                                                <div className="flex items-center gap-1.5">
+                                                    <code className="text-xs bg-slate-100 px-2 py-0.5 rounded font-mono">
+                                                        {showPasswords.has(cred.id) ? cred.password : '••••••••'}
+                                                    </code>
+                                                    <button onClick={() => togglePassword(cred.id)} className="text-slate-400 hover:text-slate-600 p-0.5">
+                                                        <Eye size={14}/>
+                                                    </button>
+                                                    <button
+                                                        onClick={() => { navigator.clipboard.writeText(cred.password!); }}
+                                                        className="text-slate-400 hover:text-slate-600 p-0.5"
+                                                        title="Копіювати"
+                                                    >
+                                                        <Copy size={14}/>
+                                                    </button>
+                                                </div>
+                                            ) : (
+                                                <span className="text-xs text-slate-400">—</span>
+                                            )}
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                                                cred.status === 'active' ? 'bg-green-100 text-green-700' :
+                                                cred.status === 'inactive' ? 'bg-slate-100 text-slate-600' :
+                                                cred.status === 'login_failed' ? 'bg-red-100 text-red-700' :
+                                                'bg-amber-100 text-amber-700'
+                                            }`}>
+                                                {cred.status}
+                                            </span>
+                                        </td>
+                                        <td className="px-4 py-3 text-xs text-slate-500">
+                                            {cred.auth_type === 'magic_link' ? 'Magic Link' : cred.auth_type || 'password'}
+                                        </td>
+                                        <td className="px-4 py-3 text-xs text-slate-400">
+                                            {new Date(cred.updated_at).toLocaleDateString('uk-UA')}
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <button onClick={() => deleteCredential(cred.id)} className="text-red-400 hover:text-red-600 p-1" title="Видалити">
+                                                <Trash2 size={14}/>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+        )}
+
         {activeTab === 'automation' && (
             <div className="animate-fade-in max-w-3xl">
                 <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-6">
