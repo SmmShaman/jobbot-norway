@@ -204,7 +204,7 @@ Location: {job.get('location', 'Unknown')}
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
 
-    max_retries = 3
+    max_retries = 6
     for attempt in range(max_retries + 1):
         try:
             response = await client.post(
@@ -230,9 +230,9 @@ Location: {job.get('location', 'Unknown')}
                 timeout=60.0
             )
 
-            # Retry on 503/429 with exponential backoff
+            # Retry on 503/429 with exponential backoff (capped at 60s)
             if response.status_code in (503, 429) and attempt < max_retries:
-                wait = 2 ** attempt * 3  # 3s, 6s, 12s
+                wait = min(2 ** attempt * 5, 60)  # 5s, 10s, 20s, 40s, 60s, 60s
                 print(f"   ⏳ Gemini {response.status_code}, retry {attempt + 1}/{max_retries} in {wait}s...")
                 await asyncio.sleep(wait)
                 continue
@@ -278,7 +278,7 @@ Location: {job.get('location', 'Unknown')}
 
         except asyncio.TimeoutError:
             if attempt < max_retries:
-                wait = 2 ** attempt * 3
+                wait = min(2 ** attempt * 5, 60)
                 print(f"   ⏳ Timeout, retry {attempt + 1}/{max_retries} in {wait}s...")
                 await asyncio.sleep(wait)
                 continue
@@ -405,7 +405,7 @@ async def generate_soknad_via_api(
 ) -> dict:
     """Call generate_application Edge Function to create søknad"""
     url = f"{SUPABASE_URL}/functions/v1/generate_application"
-    max_retries = 2
+    max_retries = 4
     for attempt in range(max_retries + 1):
         try:
             response = await client.post(
@@ -419,9 +419,9 @@ async def generate_soknad_via_api(
             )
             if response.status_code == 200:
                 return response.json()
-            # Retry on 503/429 (Gemini overload propagated through Edge Function)
+            # Retry on 503/429 with exponential backoff (capped at 60s)
             if response.status_code in (503, 429) and attempt < max_retries:
-                wait = 2 ** attempt * 3
+                wait = min(2 ** attempt * 5, 60)  # 5s, 10s, 20s, 40s
                 print(f"   ⏳ Søknad API {response.status_code}, retry {attempt + 1}/{max_retries} in {wait}s...")
                 await asyncio.sleep(wait)
                 continue
@@ -489,7 +489,7 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
     print(f"🚀 Analyze Worker started at {datetime.now().isoformat()}")
     print(f"   Limit: {limit}, User: {user_id or 'all'}")
 
-    # 1. Get unanalyzed jobs
+    # 1. Get unanalyzed jobs (includes previously failed ones for re-analysis)
     query = supabase.table('jobs').select('*').neq('status', 'ANALYZED').not_.is_('description', 'null')
 
     if user_id:
@@ -502,7 +502,16 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
         print("✅ Нет вакансий для анализа")
         return
 
+    # Split into retry vs new jobs (retry = created before today)
+    today_str = datetime.utcnow().strftime('%Y-%m-%d')
+    retry_jobs = [j for j in jobs if j.get('created_at', '')[:10] < today_str]
+    new_jobs = [j for j in jobs if j.get('created_at', '')[:10] >= today_str]
+
     print(f"📋 Найдено {len(jobs)} вакансий для анализа")
+    if retry_jobs:
+        print(f"   🔄 Re-analyze (failed earlier): {len(retry_jobs)}")
+    if new_jobs:
+        print(f"   🆕 New jobs: {len(new_jobs)}")
 
     # 2. Group by user_id
     jobs_by_user: dict = {}
@@ -514,6 +523,7 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
 
     # 3. Process each user's jobs
     total_analyzed = 0
+    total_failed = 0
     total_cost = 0.0
 
     async with httpx.AsyncClient() as client:
@@ -612,6 +622,7 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                     user_cost += result['cost']
                     user_tokens_used += result.get('tokens_in', 0) + result.get('tokens_out', 0)
                 else:
+                    total_failed += 1
                     print(f"   ❌ {job['title'][:40]} | Error: {result['error']}")
 
                 # Rate limiting for Gemini API (Free tier: 5 RPM = 12s between requests)
@@ -652,6 +663,8 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
     # 4. Log summary
     print(f"\n{'='*50}")
     print(f"✅ Analyzed: {total_analyzed} jobs")
+    if total_failed > 0:
+        print(f"❌ Failed: {total_failed} jobs (will retry next run)")
     print(f"💰 Total cost: ${total_cost:.4f}")
     print(f"⏱️ Finished at {datetime.now().isoformat()}")
 
@@ -660,9 +673,11 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
         supabase.table('system_logs').insert({
             'event_type': 'ANALYSIS',
             'status': 'SUCCESS',
-            'message': f'Analyze worker completed: {total_analyzed} jobs for {len(jobs_by_user)} users',
+            'message': f'Analyze worker completed: {total_analyzed} analyzed, {total_failed} failed for {len(jobs_by_user)} users',
             'details': {
                 'jobs_analyzed': total_analyzed,
+                'jobs_failed': total_failed,
+                'jobs_retried': len(retry_jobs),
                 'total_cost': total_cost,
                 'users_processed': len(jobs_by_user)
             },
