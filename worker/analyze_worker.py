@@ -29,10 +29,11 @@ SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_SERVICE_KEY')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 GEMINI_MODEL = 'gemini-2.5-flash'  # Switched from 2.5-pro on 2026-04-09: Google removed pro from Free tier on 2026-04-01 (see GEMINI_API_BRIEFING.md)
+GEMINI_FALLBACK_MODEL = 'gemini-2.0-flash'  # Fallback when primary model returns 503
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_TECH_TOKEN = os.environ.get('TELEGRAM_TECH_BOT_TOKEN')
 
-# Pricing (Gemini 2.5 Flash)
+# Pricing (Gemini 2.5 Flash — used for both models, 2.0-flash is cheaper but we overcount slightly)
 PRICE_INPUT = 0.30 / 1_000_000   # $0.30 per 1M tokens
 PRICE_OUTPUT = 2.50 / 1_000_000  # $2.50 per 1M tokens
 
@@ -202,91 +203,112 @@ Location: {job.get('location', 'Unknown')}
 {job.get('description', 'No description available')}
 """
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-
-    max_retries = 6
-    for attempt in range(max_retries + 1):
-        try:
-            response = await client.post(
-                url,
-                headers={
-                    'Content-Type': 'application/json'
-                },
-                json={
-                    'contents': [
-                        {
-                            'role': 'user',
-                            'parts': [{'text': full_prompt}]
-                        }
-                    ],
-                    'systemInstruction': {
-                        'parts': [{'text': f'You are a helpful HR assistant that outputs strictly valid JSON. Write all text content in {lang_full} language.'}]
-                    },
-                    'generationConfig': {
-                        'temperature': 0.3,
-                        'responseMimeType': 'application/json'
-                    }
-                },
-                timeout=60.0
-            )
-
-            # Retry on 503/429 with exponential backoff (capped at 60s)
-            if response.status_code in (503, 429) and attempt < max_retries:
-                wait = min(2 ** attempt * 5, 60)  # 5s, 10s, 20s, 40s, 60s, 60s
-                print(f"   ⏳ Gemini {response.status_code}, retry {attempt + 1}/{max_retries} in {wait}s...")
-                await asyncio.sleep(wait)
-                continue
-
-            if response.status_code != 200:
-                raise Exception(f"Gemini API error: {response.status_code} - {response.text}")
-
-            data = response.json()
-
-            # Extract text from Gemini response
-            candidates = data.get('candidates', [])
-            if not candidates:
-                raise Exception("No candidates in Gemini response")
-
-            text_content = candidates[0].get('content', {}).get('parts', [{}])[0].get('text', '')
-            content = json.loads(text_content)
-
-            usage_metadata = data.get('usageMetadata', {})
-
-            # Validate aura and radar
-            aura = validate_aura(content.get('aura'))
-            radar = validate_radar(content.get('radar'))
-
-            # Calculate cost
-            tokens_in = usage_metadata.get('promptTokenCount', 0)
-            tokens_out = usage_metadata.get('candidatesTokenCount', 0)
-            cost = (tokens_in * PRICE_INPUT) + (tokens_out * PRICE_OUTPUT)
-
-            return {
-                'success': True,
-                'score': content.get('score', 0),
-                'position_uk': content.get('position_uk', ''),
-                'analysis': content.get('analysis', ''),
-                'tasks': content.get('tasks', ''),
-                'requirements': content.get('requirements', ''),
-                'offers': content.get('offers', ''),
-                'aura': aura,
-                'radar': radar,
-                'cost': cost,
-                'tokens_in': tokens_in,
-                'tokens_out': tokens_out
+    request_body = {
+        'contents': [
+            {
+                'role': 'user',
+                'parts': [{'text': full_prompt}]
             }
+        ],
+        'systemInstruction': {
+            'parts': [{'text': f'You are a helpful HR assistant that outputs strictly valid JSON. Write all text content in {lang_full} language.'}]
+        },
+        'generationConfig': {
+            'temperature': 0.3,
+            'responseMimeType': 'application/json'
+        }
+    }
 
-        except asyncio.TimeoutError:
-            if attempt < max_retries:
-                wait = min(2 ** attempt * 5, 60)
-                print(f"   ⏳ Timeout, retry {attempt + 1}/{max_retries} in {wait}s...")
-                await asyncio.sleep(wait)
-                continue
-            return {'success': False, 'error': f'Timeout after {max_retries + 1} attempts'}
-        except json.JSONDecodeError as e:
-            return {'success': False, 'error': f'JSON parse error: {e}'}
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
+    # Try primary model (3 retries), then fallback model (2 retries)
+    models = [
+        (GEMINI_MODEL, 3),
+        (GEMINI_FALLBACK_MODEL, 2),
+    ]
+
+    for model, max_retries in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+
+        for attempt in range(max_retries + 1):
+            try:
+                response = await client.post(
+                    url,
+                    headers={'Content-Type': 'application/json'},
+                    json=request_body,
+                    timeout=60.0
+                )
+
+                # Retry on 503/429 with exponential backoff
+                if response.status_code in (503, 429) and attempt < max_retries:
+                    wait = min(2 ** attempt * 5, 60)  # 5s, 10s, 20s
+                    print(f"   ⏳ {model} {response.status_code}, retry {attempt + 1}/{max_retries} in {wait}s...")
+                    await asyncio.sleep(wait)
+                    continue
+
+                # Exhausted retries on this model — try fallback
+                if response.status_code in (503, 429) and attempt >= max_retries:
+                    if model != GEMINI_FALLBACK_MODEL:
+                        print(f"   🔄 {model} unavailable after {max_retries + 1} attempts, switching to {GEMINI_FALLBACK_MODEL}...")
+                    break
+
+                if response.status_code != 200:
+                    raise Exception(f"Gemini API error: {response.status_code} - {response.text}")
+
+                data = response.json()
+
+                # Extract text from Gemini response
+                candidates = data.get('candidates', [])
+                if not candidates:
+                    raise Exception("No candidates in Gemini response")
+
+                text_content = candidates[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+                content = json.loads(text_content)
+
+                usage_metadata = data.get('usageMetadata', {})
+
+                # Validate aura and radar
+                aura = validate_aura(content.get('aura'))
+                radar = validate_radar(content.get('radar'))
+
+                # Calculate cost
+                tokens_in = usage_metadata.get('promptTokenCount', 0)
+                tokens_out = usage_metadata.get('candidatesTokenCount', 0)
+                cost = (tokens_in * PRICE_INPUT) + (tokens_out * PRICE_OUTPUT)
+
+                used_model = model
+                if model == GEMINI_FALLBACK_MODEL:
+                    used_model = f"{model} (fallback)"
+
+                return {
+                    'success': True,
+                    'score': content.get('score', 0),
+                    'position_uk': content.get('position_uk', ''),
+                    'analysis': content.get('analysis', ''),
+                    'tasks': content.get('tasks', ''),
+                    'requirements': content.get('requirements', ''),
+                    'offers': content.get('offers', ''),
+                    'aura': aura,
+                    'radar': radar,
+                    'cost': cost,
+                    'tokens_in': tokens_in,
+                    'tokens_out': tokens_out,
+                    'model': used_model
+                }
+
+            except asyncio.TimeoutError:
+                if attempt < max_retries:
+                    wait = min(2 ** attempt * 5, 60)
+                    print(f"   ⏳ {model} timeout, retry {attempt + 1}/{max_retries} in {wait}s...")
+                    await asyncio.sleep(wait)
+                    continue
+                if model != GEMINI_FALLBACK_MODEL:
+                    print(f"   🔄 {model} timeout after {max_retries + 1} attempts, switching to {GEMINI_FALLBACK_MODEL}...")
+                break
+            except json.JSONDecodeError as e:
+                return {'success': False, 'error': f'JSON parse error: {e}'}
+            except Exception as e:
+                return {'success': False, 'error': str(e)}
+
+    return {'success': False, 'error': f'All models unavailable (503) after retries'}
 
 
 async def send_job_card(
@@ -595,7 +617,8 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                     score = result['score']
                     emoji = "🟢" if score >= 70 else "🟡" if score >= 50 else "⚪"
                     title = job['title'][:40]
-                    print(f"   {emoji} {title} | {score}% | ${result['cost']:.4f}")
+                    model_tag = f" [{result['model']}]" if 'model' in result and 'fallback' in result.get('model', '') else ""
+                    print(f"   {emoji} {title} | {score}% | ${result['cost']:.4f}{model_tag}")
 
                     # Auto-søknad generation (before sending card, so it's included)
                     auto_app = None
