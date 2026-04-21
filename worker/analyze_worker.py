@@ -29,7 +29,7 @@ SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_SERVICE_KEY')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 GEMINI_MODEL = 'gemini-2.5-flash'  # Switched from 2.5-pro on 2026-04-09: Google removed pro from Free tier on 2026-04-01 (see GEMINI_API_BRIEFING.md)
-GEMINI_FALLBACK_MODEL = 'gemini-2.0-flash'  # Fallback when primary model returns 503
+GEMINI_FALLBACK_MODEL = 'gemini-2.5-flash-lite'  # Fallback when primary model returns 503
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_TECH_TOKEN = os.environ.get('TELEGRAM_TECH_BOT_TOKEN')
 
