@@ -135,6 +135,12 @@ export const translations = {
         confirmSent: 'Yes, sent!',
         viewTask: 'Task'
       },
+      markSent: {
+        label: 'Mark sent',
+        bulkLabel: 'Mark sent',
+        bulkTitle: 'Mark selected jobs as sent',
+        help: 'Manually mark this job as sent (no søknad required)'
+      },
       sections: {
         aiAnalysis: 'AI Relevance Analysis',
         duties: 'Key Duties (What to do)',
@@ -374,6 +380,12 @@ export const translations = {
         confirmSent: 'Ja, sendt!',
         viewTask: 'Oppgave'
       },
+      markSent: {
+        label: 'Merk sendt',
+        bulkLabel: 'Merk sendt',
+        bulkTitle: 'Merk valgte jobber som sendt',
+        help: 'Merk denne jobben som sendt manuelt (uten søknad)'
+      },
       sections: {
         aiAnalysis: 'AI Relevanseanalyse',
         duties: 'Nøkkeloppgaver (Hva må gjøres)',
@@ -612,6 +624,12 @@ export const translations = {
         sendManually: 'Відправити вручну',
         confirmSent: 'Так, відправлено!',
         viewTask: 'Завдання'
+      },
+      markSent: {
+        label: 'Позначити відпр.',
+        bulkLabel: 'Позначити відпр.',
+        bulkTitle: 'Позначити вибрані вакансії як відправлені',
+        help: 'Вручну позначити цю вакансію як відправлену (без сокнаду)'
       },
       sections: {
         aiAnalysis: 'AI Аналіз Релевантності',

@@ -487,6 +487,61 @@ export const api = {
       return { success: !error, message: error?.message };
   },
 
+  // Mark a job as sent manually, even when no application exists or it's still a draft.
+  // Creates a minimal application record if none exists, otherwise flips status to 'sent'.
+  markJobAsSentManually: async (jobId: string): Promise<{ success: boolean; message?: string }> => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return { success: false, message: 'Not authenticated' };
+
+      const sentAt = new Date().toISOString();
+
+      const { data: existing } = await supabase
+          .from('applications')
+          .select('id, status')
+          .eq('job_id', jobId)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+      if (existing) {
+          if (existing.status === 'sent') return { success: true };
+          const { error } = await supabase
+              .from('applications')
+              .update({
+                  status: 'sent',
+                  sent_at: sentAt,
+                  skyvern_metadata: { source: 'manual' }
+              })
+              .eq('id', existing.id);
+          return { success: !error, message: error?.message };
+      }
+
+      const { error: insertError } = await supabase
+          .from('applications')
+          .insert([{
+              job_id: jobId,
+              user_id: user.id,
+              status: 'sent',
+              sent_at: sentAt,
+              created_at: sentAt,
+              prompt_source: 'manual-mark-sent',
+              skyvern_metadata: { source: 'manual' }
+          }]);
+      return { success: !insertError, message: insertError?.message };
+  },
+
+  bulkMarkJobsAsSent: async (jobIds: string[]): Promise<{ success: number; failed: number; errors: string[] }> => {
+      let success = 0;
+      let failed = 0;
+      const errors: string[] = [];
+      for (const jobId of jobIds) {
+          const result = await api.markJobAsSentManually(jobId);
+          if (result.success) success++;
+          else { failed++; if (result.message) errors.push(result.message); }
+      }
+      return { success, failed, errors };
+  },
+
   // Fill FINN Easy Apply form via Skyvern
   fillFinnForm: async (jobId: string, applicationId: string): Promise<{ success: boolean; message?: string; taskId?: string; workerWarning?: string }> => {
       try {

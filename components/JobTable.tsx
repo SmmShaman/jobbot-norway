@@ -571,6 +571,15 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
     );
   }, [selectedIds, filteredJobs]);
 
+  // Jobs that can be manually marked as sent (selected, not already sent/sending)
+  const jobsToMarkSent = useMemo(() => {
+    return filteredJobs.filter(job =>
+      selectedIds.has(job.id) &&
+      job.application_status !== 'sent' &&
+      job.application_status !== 'sending'
+    );
+  }, [selectedIds, filteredJobs]);
+
   // --- AURA STYLE LOGIC ---
   const getAuraStyle = (job: Job) => {
       if (!job.aura) return '';
@@ -730,6 +739,35 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
       } else {
           alert("Помилка: " + result.message);
       }
+  };
+
+  // Mark as sent without writing søknad (or for any non-sent state)
+  const handleMarkJobAsSent = async (job: Job) => {
+      if (!window.confirm(`Позначити "${job.title}" як відправлено?`)) return;
+      setIsSending(true);
+      const result = await api.markJobAsSentManually(job.id);
+      setIsSending(false);
+      if (result.success) {
+          if (applicationData && applicationData.job_id === job.id) {
+              setApplicationData({ ...applicationData, status: 'sent', sent_at: new Date().toISOString() });
+          }
+          if (onRefresh) onRefresh();
+      } else {
+          alert("Помилка: " + result.message);
+      }
+  };
+
+  const handleBulkMarkAsSent = async () => {
+      if (jobsToMarkSent.length === 0) return;
+      if (!window.confirm(`Позначити ${jobsToMarkSent.length} вакансій як відправлені?`)) return;
+      setIsProcessingBulk(true);
+      const result = await api.bulkMarkJobsAsSent(jobsToMarkSent.map(j => j.id));
+      setIsProcessingBulk(false);
+      if (result.failed > 0) {
+          alert(`Готово: ${result.success} відправлено, ${result.failed} помилок.\n${result.errors.slice(0, 3).join('\n')}`);
+      }
+      setSelectedIds(new Set());
+      if (onRefresh) onRefresh();
   };
 
   const handleCancelTask = async () => {
@@ -1127,7 +1165,12 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
                 {applicationData ? (
                     <>
                         {renderStatusBadge(applicationData)}
-                        {applicationData.status === 'draft' && <button onClick={handleApproveApp} disabled={isApproving} className="text-xs bg-green-600 text-white px-3 py-1.5 rounded hover:bg-green-700 flex items-center gap-1 shadow-sm">{isApproving ? <Loader2 size={12} className="animate-spin"/> : <CheckCircle size={12}/>} {t('jobs.actions.approve')}</button>}
+                        {applicationData.status === 'draft' && <>
+                            <button onClick={handleApproveApp} disabled={isApproving} className="text-xs bg-green-600 text-white px-3 py-1.5 rounded hover:bg-green-700 flex items-center gap-1 shadow-sm">{isApproving ? <Loader2 size={12} className="animate-spin"/> : <CheckCircle size={12}/>} {t('jobs.actions.approve')}</button>
+                            <button onClick={() => handleMarkJobAsSent(job)} disabled={isSending} title={t('jobs.markSent.help')} className="text-xs px-3 py-1.5 rounded font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 flex items-center gap-1">
+                                {isSending ? <Loader2 size={12} className="animate-spin"/> : <CheckCircle size={12} />} {t('jobs.markSent.label')}
+                            </button>
+                        </>}
                         {applicationData.status === 'approved' && !pendingManualSend &&
                             <button onClick={() => setPendingManualSend(true)} className="text-xs bg-amber-500 text-white px-3 py-1.5 rounded hover:bg-amber-600 flex items-center gap-1 shadow-sm"><ExternalLink size={12}/> {t('jobs.actions.sendManually')}</button>
                         }
@@ -1178,7 +1221,12 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
                         ) : null}
                     </>
                 ) : (
-                    <button onClick={() => handleWriteSoknad(job)} disabled={(!descriptions[job.id] && !job.description)} className={`text-xs px-3 py-1.5 rounded font-medium text-white flex items-center gap-1 shadow-sm ${(!descriptions[job.id] && !job.description) ? 'bg-slate-300' : 'bg-green-600 hover:bg-green-700'}`}><Sparkles size={12} /> {t('jobs.actions.writeSoknad')}</button>
+                    <>
+                      <button onClick={() => handleWriteSoknad(job)} disabled={(!descriptions[job.id] && !job.description)} className={`text-xs px-3 py-1.5 rounded font-medium text-white flex items-center gap-1 shadow-sm ${(!descriptions[job.id] && !job.description) ? 'bg-slate-300' : 'bg-green-600 hover:bg-green-700'}`}><Sparkles size={12} /> {t('jobs.actions.writeSoknad')}</button>
+                      <button onClick={() => handleMarkJobAsSent(job)} disabled={isSending} title={t('jobs.markSent.help')} className="text-xs px-3 py-1.5 rounded font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 flex items-center gap-1">
+                          {isSending ? <Loader2 size={12} className="animate-spin"/> : <CheckCircle size={12} />} {t('jobs.markSent.label')}
+                      </button>
+                    </>
                 )}
                 <div className="text-slate-400 pl-2 border-l">{openSections.app ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</div>
             </div>
@@ -1443,6 +1491,18 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
                  <span className="hidden md:inline">Auto-Apply</span> {jobsToAutoApply.length > 0 && <span className="bg-white/20 px-1.5 rounded text-xs">{jobsToAutoApply.length}</span>}
               </button>
               <HelpTip text={t('jobs.help.autoApply')} />
+
+              <button
+                onClick={handleBulkMarkAsSent}
+                disabled={isProcessingBulk || jobsToMarkSent.length === 0}
+                title={t('jobs.markSent.bulkTitle')}
+                className={`flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                   jobsToMarkSent.length > 0 ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
+              >
+                 {isProcessingBulk ? <Loader2 className="animate-spin" size={14} /> : <CheckCircle size={14} />}
+                 <span className="hidden md:inline">{t('jobs.markSent.bulkLabel')}</span> {jobsToMarkSent.length > 0 && <span className="bg-white/20 px-1.5 rounded text-xs">{jobsToMarkSent.length}</span>}
+              </button>
+              <HelpTip text={t('jobs.markSent.help')} />
 
             </>
           ) : null}
