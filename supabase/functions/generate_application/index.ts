@@ -1,5 +1,5 @@
 
-const VERSION_STAMP = '2026-04-14-anthropic';
+const VERSION_STAMP = '2026-04-30-gemini';
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
 
@@ -10,44 +10,110 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// --- PRICING CONFIGURATION (Claude Sonnet 4.6, USD per 1M tokens) ---
-const PRICE_PER_1M_INPUT = 3.00;
-const PRICE_PER_1M_OUTPUT = 15.00;
+// Gemini model fallback chain — try most powerful first.
+// Pro was removed from Free tier on 2026-04-01, so Pro requires paid Gemini API access.
+// If Pro fails (auth/quota), we fall back to Flash, then Flash-Lite.
+const GEMINI_MODELS: Array<{ name: string; priceIn: number; priceOut: number }> = [
+  { name: 'gemini-2.5-pro',         priceIn: 1.25, priceOut: 10.00 },
+  { name: 'gemini-2.5-flash',       priceIn: 0.30, priceOut: 2.50 },
+  { name: 'gemini-2.5-flash-lite',  priceIn: 0.10, priceOut: 0.40 },
+];
 
-const ANTHROPIC_MODEL = 'claude-sonnet-4-6';
+interface GeminiCallResult {
+  text: string;
+  model: string;
+  tokensIn: number;
+  tokensOut: number;
+  cost: number;
+}
+
+async function callGeminiWithFallback(apiKey: string, prompt: string, systemInstruction: string): Promise<GeminiCallResult> {
+  const errors: string[] = [];
+
+  for (const model of GEMINI_MODELS) {
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model.name}:generateContent?key=${apiKey}`;
+
+    // Up to 2 retries per model on 5xx
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            systemInstruction: { parts: [{ text: systemInstruction }] },
+            generationConfig: {
+              temperature: 0.7,
+              responseMimeType: 'application/json',
+              maxOutputTokens: 4096
+            }
+          })
+        });
+
+        if (response.status >= 500 || response.status === 429) {
+          errors.push(`${model.name} ${response.status}`);
+          if (attempt < 1) {
+            await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+            continue;
+          }
+          break; // exhausted retries on this model — try next
+        }
+
+        if (!response.ok) {
+          // 4xx (except 429): permission/quota/billing — skip this model
+          const txt = await response.text();
+          errors.push(`${model.name} ${response.status}: ${txt.slice(0, 200)}`);
+          break;
+        }
+
+        const json = await response.json();
+        const candidates = json.candidates || [];
+        const text = candidates[0]?.content?.parts?.[0]?.text || '';
+        if (!text) {
+          errors.push(`${model.name}: empty response`);
+          break;
+        }
+
+        const usage = json.usageMetadata || {};
+        const tokensIn = usage.promptTokenCount || 0;
+        const tokensOut = usage.candidatesTokenCount || 0;
+        const cost = (tokensIn / 1_000_000 * model.priceIn) + (tokensOut / 1_000_000 * model.priceOut);
+
+        console.log(`[generate_application] Used model: ${model.name}, tokens=${tokensIn}/${tokensOut}, cost=$${cost.toFixed(4)}`);
+        return { text, model: model.name, tokensIn, tokensOut, cost };
+      } catch (e: any) {
+        errors.push(`${model.name} threw: ${e.message}`);
+        break;
+      }
+    }
+  }
+
+  throw new Error(`All Gemini models failed: ${errors.join(' | ')}`);
+}
 
 serve(async (req: Request) => {
-  // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
 
   try {
-    let { job_id, user_id } = await req.json();
+    const { job_id, user_id } = await req.json();
 
-    if (!job_id) {
-      throw new Error('Job ID is required');
-    }
+    if (!job_id) throw new Error('Job ID is required');
 
-    // 1. Check Secrets FIRST
-    const anthropicApiKey = Deno.env.get('ANTHROPIC_API_KEY');
-
-    if (!anthropicApiKey) {
-      throw new Error("Missing ANTHROPIC_API_KEY secret.");
-    }
+    const geminiApiKey = Deno.env.get('GEMINI_API_KEY');
+    if (!geminiApiKey) throw new Error("Missing GEMINI_API_KEY secret.");
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // MULTI-USER: user_id is required
     if (!user_id) {
-      console.log('[generate_application] No user_id provided');
       throw new Error("user_id is required for generating applications. Please log in first.");
     }
-    console.log(`[generate_application] Processing for user: ${user_id}`);
+    console.log(`[generate_application ${VERSION_STAMP}] Processing for user: ${user_id}`);
 
-    // 2. Check if Application already exists FOR THIS USER
+    // 2. Check existing application for this user
     const { data: existingApp } = await supabase
       .from('applications')
       .select('*')
@@ -57,19 +123,18 @@ serve(async (req: Request) => {
       .single();
 
     if (existingApp) {
-      console.log(`[generate_application] Returning existing application ${existingApp.id} for user ${user_id}`);
       return new Response(JSON.stringify({ success: true, application: existingApp, message: "Returning existing application" }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
 
-    // 3. Fetch Job Description
+    // 3. Job description
     const { data: job } = await supabase.from('jobs').select('description, title, company').eq('id', job_id).single();
     if (!job || !job.description) {
       throw new Error("Job description missing. Please click 'Extract Details' first.");
     }
 
-    // 4. Fetch Active Profile - MUST be filtered by user_id (no unsafe fallback!)
+    // 4. Active profile (filtered by user)
     const { data: profile, error: profileError } = await supabase
       .from('cv_profiles')
       .select('content')
@@ -78,28 +143,19 @@ serve(async (req: Request) => {
       .single();
 
     if (profileError || !profile?.content) {
-      console.log(`[generate_application] No profile for user_id=${user_id}:`, profileError?.message);
       throw new Error(`No active CV profile found for your account. Go to Settings → Resume and create/activate a profile.`);
     }
-    console.log(`[generate_application] Using profile for user ${user_id} (${profile.content.length} chars)`);
 
-    // 5. Fetch Application Prompt (User Settings) - filter by user_id (no unsafe fallback)
+    // 5. Custom prompt (per-user)
     let userPrompt = "Write a professional cover letter in Norwegian (Bokmål). Make it formal but personable.";
-
     const { data: settings } = await supabase
       .from('user_settings')
       .select('application_prompt')
       .eq('user_id', user_id)
       .single();
+    if (settings?.application_prompt) userPrompt = settings.application_prompt;
 
-    if (settings?.application_prompt) {
-      userPrompt = settings.application_prompt;
-      console.log(`[generate_application] Using custom prompt for user ${user_id}`);
-    } else {
-      console.log(`[generate_application] Using default prompt for user ${user_id}`);
-    }
-
-    // 6. Call Anthropic Claude API
+    // 6. Build prompt + call Gemini with fallback
     const systemInstruction = `You are an expert career consultant for the Norwegian job market.
 Your task is to write a "Soknad" (Cover Letter) based on the provided Job Description and Candidate Profile.
 
@@ -123,78 +179,36 @@ You must output valid JSON only, with no markdown fences or extra text.
       ${profile.content}
     `;
 
-    console.log("Sending request to Anthropic API...");
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': anthropicApiKey,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: ANTHROPIC_MODEL,
-        max_tokens: 4096,
-        temperature: 0.7,
-        system: systemInstruction,
-        messages: [
-          { role: 'user', content: fullPrompt }
-        ]
-      })
-    });
-
-    if (!response.ok) {
-       const txt = await response.text();
-       console.error("Anthropic API Error:", txt);
-       throw new Error(`Anthropic API returned error: ${response.status} - ${txt}`);
-    }
-
-    const json = await response.json();
-
-    const textBlock = json.content?.find((b: any) => b.type === 'text');
-    if (!textBlock?.text) {
-      throw new Error("Invalid response from Anthropic API");
-    }
+    const { text, model, tokensIn, tokensOut, cost } = await callGeminiWithFallback(geminiApiKey, fullPrompt, systemInstruction);
 
     let contentObj;
     try {
-      // Strip markdown fences if present
-      let raw = textBlock.text.trim();
+      let raw = text.trim();
       if (raw.startsWith('```')) {
         raw = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
       }
       contentObj = JSON.parse(raw);
     } catch (e) {
-      console.error("Failed to parse AI response as JSON:", textBlock.text);
+      console.error("Failed to parse AI response as JSON:", text);
       throw new Error("AI did not return valid JSON. Try again.");
     }
 
-    // --- CALCULATE COST ---
-    let cost = 0;
-    let tokensIn = 0;
-    let tokensOut = 0;
-
-    const usage = json.usage;
-    if (usage) {
-        tokensIn = usage.input_tokens || 0;
-        tokensOut = usage.output_tokens || 0;
-        cost = (tokensIn / 1000000 * PRICE_PER_1M_INPUT) +
-               (tokensOut / 1000000 * PRICE_PER_1M_OUTPUT);
+    if (!contentObj.soknad_no) {
+      throw new Error("AI response missing 'soknad_no' field.");
     }
 
-    // 7. Save to Database
+    // 7. Save
     const { data: savedApp, error: saveError } = await supabase
       .from('applications')
       .insert([{
         job_id,
-        user_id, 
+        user_id,
         cover_letter_no: contentObj.soknad_no,
-        cover_letter_uk: contentObj.translation_uk,
+        cover_letter_uk: contentObj.translation_uk || null,
         status: 'draft',
         created_at: new Date().toISOString(),
         generated_prompt: fullPrompt,
-        prompt_source: 'web-dashboard',
-        // Cost Tracking
+        prompt_source: `web-dashboard:${model}`,
         cost_usd: cost,
         tokens_input: tokensIn,
         tokens_output: tokensOut
@@ -207,16 +221,15 @@ You must output valid JSON only, with no markdown fences or extra text.
       throw new Error(`Database Save Error: ${saveError.message}`);
     }
 
-    // Log cost to system_logs for per-user cost tracking
     await supabase.from('system_logs').insert({
       user_id,
       event_type: 'APPLICATION_GEN',
       status: 'SUCCESS',
-      message: `Cover letter: "${job.title}" at ${job.company}`,
+      message: `Cover letter: "${job.title}" at ${job.company} [${model}]`,
       tokens_used: tokensIn + tokensOut,
       cost_usd: cost,
       source: 'WEB_DASHBOARD',
-      details: { job_id, application_id: savedApp?.id, tokens_input: tokensIn, tokens_output: tokensOut }
+      details: { job_id, application_id: savedApp?.id, model, tokens_input: tokensIn, tokens_output: tokensOut }
     });
 
     return new Response(JSON.stringify({ success: true, application: savedApp }), {
@@ -225,10 +238,9 @@ You must output valid JSON only, with no markdown fences or extra text.
 
   } catch (error: any) {
     console.error("Generate Application Error:", error);
-    // Return 200 with success: false so the frontend can read the error message
     return new Response(JSON.stringify({ success: false, message: error.message }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }, 
-      status: 200 
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 200
     });
   }
 });
