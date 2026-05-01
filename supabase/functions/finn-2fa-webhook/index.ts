@@ -51,6 +51,7 @@ serve(async (req: Request) => {
     const body = await req.json();
     const taskId = body.task_id;
     let totpIdentifier = body.totp_identifier || body.identifier || body.email;
+    let resolvedUserId: string | null = null; // Track user_id for query scoping
 
     console.log(`📦 [FINN-2FA] Received: task_id=${taskId}, totp_identifier=${totpIdentifier || 'undefined'}`);
 
@@ -60,7 +61,7 @@ serve(async (req: Request) => {
 
       const { data: recentRequests } = await supabase
         .from('finn_auth_requests')
-        .select('id, totp_identifier, status, verification_code, expires_at')
+        .select('id, totp_identifier, user_id, status, verification_code, expires_at')
         .gt('expires_at', new Date().toISOString())
         .order('created_at', { ascending: false })
         .limit(5);
@@ -82,7 +83,8 @@ serve(async (req: Request) => {
 
       if (bestRequest) {
         totpIdentifier = bestRequest.totp_identifier;
-        console.log(`✅ [FINN-2FA] Selected request: ${bestRequest.id} (status=${bestRequest.status})`);
+        resolvedUserId = bestRequest.user_id; // Scope all subsequent queries to this user
+        console.log(`✅ [FINN-2FA] Selected request: ${bestRequest.id} (status=${bestRequest.status}, user=${resolvedUserId})`);
 
         // If it's code_received or completed with code - return it immediately
         if (bestRequest.verification_code &&
@@ -121,15 +123,16 @@ serve(async (req: Request) => {
     console.log(`🔍 [FINN-2FA] Processing for: ${totpIdentifier}`);
 
     // STEP 2: Check for code_received (user already entered code)
-    const { data: withCode } = await supabase
+    let step2Query = supabase
       .from('finn_auth_requests')
       .select('*')
       .eq('totp_identifier', totpIdentifier)
       .eq('status', 'code_received')
       .gt('expires_at', new Date().toISOString())
       .order('code_received_at', { ascending: false })
-      .limit(1)
-      .single();
+      .limit(1);
+    if (resolvedUserId) step2Query = step2Query.eq('user_id', resolvedUserId);
+    const { data: withCode } = await step2Query.single();
 
     if (withCode?.verification_code) {
       console.log(`✅ [FINN-2FA] Code already received: ${withCode.verification_code}`);
@@ -152,7 +155,7 @@ serve(async (req: Request) => {
     }
 
     // STEP 3: Check for completed with code (Skyvern retry)
-    const { data: completedWithCode } = await supabase
+    let step3Query = supabase
       .from('finn_auth_requests')
       .select('*')
       .eq('totp_identifier', totpIdentifier)
@@ -160,8 +163,9 @@ serve(async (req: Request) => {
       .not('verification_code', 'is', null)
       .gt('expires_at', new Date().toISOString())
       .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
+      .limit(1);
+    if (resolvedUserId) step3Query = step3Query.eq('user_id', resolvedUserId);
+    const { data: completedWithCode } = await step3Query.single();
 
     if (completedWithCode?.verification_code) {
       console.log(`🔄 [FINN-2FA] RETRY: Returning code from completed request: ${completedWithCode.verification_code}`);
@@ -178,15 +182,16 @@ serve(async (req: Request) => {
     }
 
     // STEP 4: Find or create code_requested record
-    const { data: pendingRequest } = await supabase
+    let step4Query = supabase
       .from('finn_auth_requests')
       .select('*')
       .eq('totp_identifier', totpIdentifier)
       .in('status', ['pending', 'code_requested'])
       .gt('expires_at', new Date().toISOString())
       .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
+      .limit(1);
+    if (resolvedUserId) step4Query = step4Query.eq('user_id', resolvedUserId);
+    const { data: pendingRequest } = await step4Query.single();
 
     let authRequest: any;
     let chatId: string | null = null;
@@ -195,6 +200,7 @@ serve(async (req: Request) => {
     if (pendingRequest) {
       console.log(`✅ [FINN-2FA] Found request: ${pendingRequest.id} (status=${pendingRequest.status})`);
       chatId = pendingRequest.telegram_chat_id;
+      if (!resolvedUserId) resolvedUserId = pendingRequest.user_id;
 
       if (pendingRequest.status === 'pending') {
         // First call from Skyvern - update to code_requested and send Telegram
@@ -224,13 +230,14 @@ serve(async (req: Request) => {
       // No pending request - try to find user from previous requests
       console.log(`⚠️ [FINN-2FA] No pending/code_requested found, looking for user info...`);
 
-      const { data: anyRequest } = await supabase
+      let anyQuery = supabase
         .from('finn_auth_requests')
         .select('telegram_chat_id, user_id')
         .eq('totp_identifier', totpIdentifier)
         .order('created_at', { ascending: false })
-        .limit(1)
-        .single();
+        .limit(1);
+      if (resolvedUserId) anyQuery = anyQuery.eq('user_id', resolvedUserId);
+      const { data: anyRequest } = await anyQuery.single();
 
       if (!anyRequest?.telegram_chat_id) {
         console.log(`⚠️ [FINN-2FA] No user found for: ${totpIdentifier} - returning empty`);
