@@ -164,8 +164,12 @@ async def scan_linkedin_for_user(user_id: str) -> dict:
         .order('created_at', desc=True).limit(1).execute()
 
     if last_scan.data:
+        import re as _re
+        _ts = last_scan.data[0]['created_at']
+        _ts = _re.sub(r'[+-]\d{2}:\d{2}$|Z$', '', _ts)  # strip tz offset (Python 3.10 compat)
+        _ts = _re.sub(r'\.(\d+)$', lambda m: '.' + m.group(1)[:6].ljust(6, '0'), _ts)  # normalize microseconds
         hours_since = (datetime.now(timezone.utc) -
-                       datetime.fromisoformat(last_scan.data[0]['created_at'].replace('+00:00', '+00:00'))).total_seconds() / 3600
+                       datetime.fromisoformat(_ts).replace(tzinfo=timezone.utc)).total_seconds() / 3600
         if hours_since < 10:
             return {'skipped': True, 'reason': f'Last scan {hours_since:.1f}h ago'}
 
