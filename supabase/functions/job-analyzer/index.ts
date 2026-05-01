@@ -234,6 +234,9 @@ CRITICAL: Your response MUST be valid JSON with this EXACT structure:
           })
         });
 
+        if (response.status === 429) {
+          throw new Error('Gemini quota exceeded (429). Daily free-tier limit reached — try again in 24 hours or check billing at console.cloud.google.com.');
+        }
         if (!response.ok) throw new Error(`Gemini API Error: ${response.status}`);
         const json = await response.json();
 
