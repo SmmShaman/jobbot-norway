@@ -767,8 +767,8 @@ def clear_claim(app_id: str, extra_fields: dict = None):
         update.update(extra_fields)
     try:
         supabase.table("applications").update(update).eq("id", app_id).execute()
-    except Exception:
-        pass
+    except Exception as e:
+        _file_logger.error(f"⚠️ clear_claim failed for {app_id}: {e}")
 
 
 def normalize_phone_for_norway(phone: str) -> str:
