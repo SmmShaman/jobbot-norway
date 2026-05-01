@@ -756,6 +756,17 @@ async def cleanup_stuck_applications():
             }).eq("id", app["id"]).execute()
             await log(f"   ❌ App {app['id'][:8]}... → failed (stuck timeout)")
 
+        # Cleanup expired application confirmations and FINN auth requests
+        try:
+            conf_result = supabase.rpc("cleanup_expired_confirmations").execute()
+            finn_result = supabase.rpc("cleanup_expired_finn_auth_requests").execute()
+            cleaned_conf = conf_result.data or 0
+            cleaned_finn = finn_result.data or 0
+            if cleaned_conf > 0 or cleaned_finn > 0:
+                await log(f"🗑️ Cleaned up {cleaned_conf} expired confirmation(s), {cleaned_finn} expired FINN auth request(s)")
+        except Exception:
+            pass  # Functions may not exist yet (pre-migration)
+
     except Exception as e:
         await log(f"⚠️ Cleanup error: {e}")
 
