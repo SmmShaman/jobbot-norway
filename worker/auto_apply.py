@@ -1085,7 +1085,7 @@ def extract_domain(url: str) -> str:
         if domain.startswith('www.'):
             domain = domain[4:]
         return domain
-    except:
+    except Exception:
         return url
 
 
@@ -1278,7 +1278,7 @@ async def trigger_registration_flow(
         profile = await get_active_profile_full(user_id)
         if profile and profile.get('structured_content'):
             reg_email = profile['structured_content'].get('personalInfo', {}).get('email', '')
-    except:
+    except Exception:
         pass
     reg_email = reg_email or "stuardbmw@gmail.com"
 
@@ -1491,7 +1491,7 @@ async def get_telegram_chat_id() -> str | None:
         if response.data and len(response.data) > 0:
             return response.data[0].get('telegram_chat_id')
         return None
-    except:
+    except Exception:
         return None
 
 
@@ -1508,7 +1508,7 @@ async def get_active_profile_full(user_id: str = None) -> dict:
         if response.data and len(response.data) > 0:
             return response.data[0]
         return {}
-    except:
+    except Exception:
         return {}
 
 
@@ -1646,7 +1646,7 @@ async def get_latest_resume_url(user_id: str = None) -> str:
                 if profile:
                     structured = profile.get('structured_content', {}) or {}
                     user_name_for_filter = (structured.get('personalInfo', {}) or {}).get('fullName', '')
-            except:
+            except Exception:
                 pass
 
         storage_bucket = getattr(supabase.storage, "from_")('resumes')
@@ -2847,7 +2847,7 @@ async def get_telegram_chat_id_for_user(user_id: str) -> str | None:
     try:
         res = supabase.table("user_settings").select("telegram_chat_id").eq("user_id", user_id).single().execute()
         return res.data.get('telegram_chat_id') if res.data else None
-    except:
+    except Exception:
         return None
 
 
@@ -2919,7 +2919,7 @@ async def ask_skyvern_question(
                 answer = q.data.get('answer', '')
                 await log(f"✅ Got answer for {field_name}: {answer[:30]}...")
                 return answer
-        except:
+        except Exception:
             pass
 
     # Timeout
@@ -2927,7 +2927,7 @@ async def ask_skyvern_question(
     try:
         supabase.table("registration_questions") \
             .update({"status": "timeout"}).eq("id", question_id).execute()
-    except:
+    except Exception:
         pass
     return None
 
@@ -3176,7 +3176,7 @@ async def send_payload_preview(
     try:
         supabase.table("application_confirmations") \
             .update({"status": "timeout"}).eq("id", confirmation_id).execute()
-    except:
+    except Exception:
         pass
     return 'timeout'
 
@@ -3348,7 +3348,7 @@ async def trigger_skyvern_task_with_credentials(
     try:
         parsed_url = urlparse(job_url)
         domain = parsed_url.netloc.lower()
-    except:
+    except Exception:
         domain = "unknown"
 
     site_type = detect_site_type(domain)
@@ -5639,7 +5639,7 @@ async def classify_applications(applications: list) -> tuple:
                     other_apps.append(app)
             else:
                 other_apps.append(app)
-        except:
+        except Exception:
             other_apps.append(app)
 
     return finn_apps, other_apps
