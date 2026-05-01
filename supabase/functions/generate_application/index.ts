@@ -111,6 +111,24 @@ serve(async (req: Request) => {
     if (!user_id) {
       throw new Error("user_id is required for generating applications. Please log in first.");
     }
+
+    // Validate that the caller's JWT matches the requested user_id (prevent cross-user forgery)
+    const authHeader = req.headers.get('authorization') ?? req.headers.get('apikey') ?? '';
+    if (authHeader.startsWith('Bearer ')) {
+      const anonUrl = Deno.env.get('SUPABASE_URL') ?? '';
+      const anonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
+      const userClient = createClient(anonUrl, anonKey, {
+        global: { headers: { authorization: authHeader } }
+      });
+      const { data: { user }, error: authError } = await userClient.auth.getUser();
+      if (authError || !user) {
+        throw new Error("Authentication required. Please log in.");
+      }
+      if (user.id !== user_id) {
+        throw new Error("Unauthorized: user_id does not match authenticated user.");
+      }
+    }
+
     console.log(`[generate_application ${VERSION_STAMP}] Processing for user: ${user_id}`);
 
     // 2. Check existing application for this user
