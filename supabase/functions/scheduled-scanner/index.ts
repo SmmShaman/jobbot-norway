@@ -134,12 +134,16 @@ serve(async (req: Request) => {
             await sendTelegramMessage(tgToken, settings.telegram_chat_id, `🔎 <b>Починаю сканування...</b>\n\n📋 URL для перевірки: ${urls.length}`);
         }
 
-        for (const url of urls) {
+        for (let urlIdx = 0; urlIdx < urls.length; urlIdx++) {
+            const url = urls[urlIdx];
             // Notify which URL is being scanned
             const urlSource = url.includes('finn.no') ? 'FINN.no' : url.includes('nav.no') ? 'NAV.no' : 'Джерело';
             if (settings.telegram_chat_id) {
                 await sendTelegramMessage(tgToken, settings.telegram_chat_id, `🔍 Сканую <b>${urlSource}</b>...`);
             }
+
+            // Rate limit between consecutive URL scrapes to avoid triggering bot detection
+            if (urlIdx > 0) await new Promise(r => setTimeout(r, 1500));
 
             const { data: scrapeData } = await supabase.functions.invoke('job-scraper', { body: { searchUrl: url, userId: userId } });
             if (!scrapeData?.success) {
