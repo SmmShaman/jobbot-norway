@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Analyze Worker - анализирует вакансии через Gemini API
-Запускается через GitHub Actions после scheduled-scanner
+Analyze Worker - аналізує вакансії через Groq API (llama-3.3-70b-versatile)
+Запускається через GitHub Actions після scheduled-scanner
 
-Использование:
-    python analyze_worker.py              # Анализировать все непроанализированные
-    python analyze_worker.py --limit 50   # Лимит вакансий
-    python analyze_worker.py --user UUID  # Только для конкретного юзера
+Використання:
+    python analyze_worker.py              # Аналізувати всі непроаналізовані
+    python analyze_worker.py --limit 50   # Ліміт вакансій
+    python analyze_worker.py --user UUID  # Тільки для конкретного юзера
 """
 
 import os
@@ -27,15 +27,15 @@ load_dotenv()
 # Configuration
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_SERVICE_KEY')
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-GEMINI_MODEL = 'gemini-2.5-flash'  # Switched from 2.5-pro on 2026-04-09: Google removed pro from Free tier on 2026-04-01 (see GEMINI_API_BRIEFING.md)
-GEMINI_FALLBACK_MODEL = 'gemini-2.5-flash-lite'  # Fallback when primary model returns 503
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
+GROQ_MODEL = 'llama-3.3-70b-versatile'
+GROQ_FALLBACK_MODEL = 'llama-3.1-8b-instant'
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_TECH_TOKEN = os.environ.get('TELEGRAM_TECH_BOT_TOKEN')
 
-# Pricing (Gemini 2.5 Flash — used for both models, 2.0-flash is cheaper but we overcount slightly)
-PRICE_INPUT = 0.30 / 1_000_000   # $0.30 per 1M tokens
-PRICE_OUTPUT = 2.50 / 1_000_000  # $2.50 per 1M tokens
+# Pricing (Groq llama-3.3-70b-versatile)
+PRICE_INPUT = 0.59 / 1_000_000   # $0.59 per 1M tokens
+PRICE_OUTPUT = 0.79 / 1_000_000  # $0.79 per 1M tokens
 
 # Aura color mapping
 AURA_COLORS = {
@@ -128,8 +128,8 @@ def validate_config():
         missing.append('SUPABASE_URL')
     if not SUPABASE_KEY:
         missing.append('SUPABASE_SERVICE_KEY')
-    if not GEMINI_API_KEY:
-        missing.append('GEMINI_API_KEY')
+    if not GROQ_API_KEY:
+        missing.append('GROQ_API_KEY')
 
     if missing:
         print(f"❌ Missing environment variables: {', '.join(missing)}")
@@ -173,14 +173,12 @@ async def analyze_job(
     lang: str,
     custom_prompt: Optional[str] = None
 ) -> dict:
-    """Analyze a single job using Gemini API"""
+    """Analyze a single job using Groq API"""
 
-    # Map language code to full name (e.g., 'uk' -> 'Ukrainian')
     lang_full = LANG_MAP.get(lang, 'Ukrainian')
-
     analysis_prompt = custom_prompt or DEFAULT_ANALYSIS_PROMPT
 
-    full_prompt = f"""{analysis_prompt}
+    user_message = f"""{analysis_prompt}
 
 LANGUAGE REQUIREMENT (MANDATORY):
 You MUST write the following fields in {lang_full}:
@@ -203,79 +201,71 @@ Location: {job.get('location', 'Unknown')}
 {job.get('description', 'No description available')}
 """
 
-    request_body = {
-        'contents': [
-            {
-                'role': 'user',
-                'parts': [{'text': full_prompt}]
-            }
-        ],
-        'systemInstruction': {
-            'parts': [{'text': f'You are a helpful HR assistant that outputs strictly valid JSON. Write all text content in {lang_full} language.'}]
-        },
-        'generationConfig': {
-            'temperature': 0.3,
-            'responseMimeType': 'application/json'
-        }
-    }
+    system_message = f'You are a helpful HR assistant that outputs strictly valid JSON. Write all text content in {lang_full} language.'
 
-    # Try primary model (3 retries), then fallback model (2 retries)
+    # Try primary model (3 retries), then fallback (2 retries)
     models = [
-        (GEMINI_MODEL, 3),
-        (GEMINI_FALLBACK_MODEL, 2),
+        (GROQ_MODEL, 3),
+        (GROQ_FALLBACK_MODEL, 2),
     ]
 
     for model, max_retries in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        url = "https://api.groq.com/openai/v1/chat/completions"
 
         for attempt in range(max_retries + 1):
             try:
                 response = await client.post(
                     url,
-                    headers={'Content-Type': 'application/json'},
-                    json=request_body,
+                    headers={
+                        'Content-Type': 'application/json',
+                        'Authorization': f'Bearer {GROQ_API_KEY}'
+                    },
+                    json={
+                        'model': model,
+                        'messages': [
+                            {'role': 'system', 'content': system_message},
+                            {'role': 'user', 'content': user_message}
+                        ],
+                        'temperature': 0.3,
+                        'response_format': {'type': 'json_object'}
+                    },
                     timeout=60.0
                 )
 
-                # Retry on 503/429 with exponential backoff
                 if response.status_code in (503, 429) and attempt < max_retries:
-                    wait = min(2 ** attempt * 5, 60)  # 5s, 10s, 20s
+                    wait = min(2 ** attempt * 5, 60)
                     print(f"   ⏳ {model} {response.status_code}, retry {attempt + 1}/{max_retries} in {wait}s...")
                     await asyncio.sleep(wait)
                     continue
 
-                # Exhausted retries on this model — try fallback
                 if response.status_code in (503, 429) and attempt >= max_retries:
-                    if model != GEMINI_FALLBACK_MODEL:
-                        print(f"   🔄 {model} unavailable after {max_retries + 1} attempts, switching to {GEMINI_FALLBACK_MODEL}...")
+                    if model != GROQ_FALLBACK_MODEL:
+                        print(f"   🔄 {model} unavailable after {max_retries + 1} attempts, switching to {GROQ_FALLBACK_MODEL}...")
                     break
 
                 if response.status_code != 200:
-                    raise Exception(f"Gemini API error: {response.status_code} - {response.text}")
+                    raise Exception(f"Groq API error: {response.status_code} - {response.text}")
 
                 data = response.json()
 
-                # Extract text from Gemini response
-                candidates = data.get('candidates', [])
-                if not candidates:
-                    raise Exception("No candidates in Gemini response")
-
-                text_content = candidates[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+                text_content = data['choices'][0]['message']['content']
                 content = json.loads(text_content)
 
-                usage_metadata = data.get('usageMetadata', {})
+                usage = data.get('usage', {})
+                tokens_in = usage.get('prompt_tokens', 0)
+                tokens_out = usage.get('completion_tokens', 0)
 
-                # Validate aura and radar
+                # Fallback model has different pricing
+                if model == GROQ_FALLBACK_MODEL:
+                    cost = (tokens_in * 0.05 / 1_000_000) + (tokens_out * 0.08 / 1_000_000)
+                else:
+                    cost = (tokens_in * PRICE_INPUT) + (tokens_out * PRICE_OUTPUT)
+
                 aura = validate_aura(content.get('aura'))
                 radar = validate_radar(content.get('radar'))
 
-                # Calculate cost
-                tokens_in = usage_metadata.get('promptTokenCount', 0)
-                tokens_out = usage_metadata.get('candidatesTokenCount', 0)
-                cost = (tokens_in * PRICE_INPUT) + (tokens_out * PRICE_OUTPUT)
-
                 used_model = model
-                if model == GEMINI_FALLBACK_MODEL:
+                if model == GROQ_FALLBACK_MODEL:
                     used_model = f"{model} (fallback)"
 
                 return {
@@ -300,15 +290,15 @@ Location: {job.get('location', 'Unknown')}
                     print(f"   ⏳ {model} timeout, retry {attempt + 1}/{max_retries} in {wait}s...")
                     await asyncio.sleep(wait)
                     continue
-                if model != GEMINI_FALLBACK_MODEL:
-                    print(f"   🔄 {model} timeout after {max_retries + 1} attempts, switching to {GEMINI_FALLBACK_MODEL}...")
+                if model != GROQ_FALLBACK_MODEL:
+                    print(f"   🔄 {model} timeout after {max_retries + 1} attempts, switching to {GROQ_FALLBACK_MODEL}...")
                 break
             except json.JSONDecodeError as e:
                 return {'success': False, 'error': f'JSON parse error: {e}'}
             except Exception as e:
                 return {'success': False, 'error': str(e)}
 
-    return {'success': False, 'error': f'All models unavailable (503) after retries'}
+    return {'success': False, 'error': 'All models unavailable after retries'}
 
 
 async def send_job_card(
@@ -447,7 +437,7 @@ async def generate_soknad_via_api(
                 print(f"   ⏳ Søknad API {response.status_code}, retry {attempt + 1}/{max_retries} in {wait}s...")
                 await asyncio.sleep(wait)
                 continue
-            return {'success': False, 'message': f'Gemini API returned error: {response.status_code} - {response.text}'}
+            return {'success': False, 'message': f'Edge Function error: {response.status_code} - {response.text}'}
         except Exception as e:
             return {'success': False, 'message': str(e)}
 
@@ -637,7 +627,7 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                     await send_job_card(client, chat_id, job, result, auto_app=auto_app, lang=lang)
 
                     if auto_app:
-                        await asyncio.sleep(1.5)  # Rate limiting for Gemini API
+                        await asyncio.sleep(0.5)
 
                     total_analyzed += 1
                     total_cost += result['cost']
@@ -648,8 +638,8 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                     total_failed += 1
                     print(f"   ❌ {job['title'][:40]} | Error: {result['error']}")
 
-                # Rate limiting for Gemini API (Free tier: 5 RPM = 12s between requests)
-                await asyncio.sleep(13.0)
+                # Rate limiting for Groq API
+                await asyncio.sleep(2.0)
 
             # Auto-søknad summary for this user (sent to tech bot)
             if auto_soknad and auto_soknad_count > 0 and chat_id:
