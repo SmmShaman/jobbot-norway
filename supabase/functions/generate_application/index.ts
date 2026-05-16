@@ -1,5 +1,5 @@
 
-const VERSION_STAMP = '2026-05-16-groq-fallback-authfix-promptfix';
+const VERSION_STAMP = '2026-05-16-claude-primary';
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
 
@@ -22,6 +22,9 @@ const GROQ_MODELS: Array<{ name: string; priceIn: number; priceOut: number }> = 
   { name: 'llama-3.3-70b-versatile', priceIn: 0.59, priceOut: 0.79 },
   { name: 'llama-3.1-8b-instant',    priceIn: 0.05, priceOut: 0.08 },
 ];
+
+// Anthropic Claude models — primary LLM (best instruction following)
+const CLAUDE_MODEL = { name: 'claude-haiku-4-5-20251001', priceIn: 0.80, priceOut: 4.00 };
 
 interface LLMCallResult {
   text: string;
@@ -137,15 +140,58 @@ async function callGroqFallback(apiKey: string, prompt: string, systemInstructio
   throw new Error(`Groq failed: ${errors.join(' | ')}`);
 }
 
-async function callLLM(geminiKey: string | null, groqKey: string | null, prompt: string, systemInstruction: string): Promise<LLMCallResult> {
-  const geminiErrors: string[] = [];
+async function callClaude(apiKey: string, prompt: string, systemInstruction: string): Promise<LLMCallResult> {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify({
+      model: CLAUDE_MODEL.name,
+      max_tokens: 4096,
+      system: systemInstruction,
+      messages: [{ role: 'user', content: prompt }]
+    })
+  });
+
+  if (!response.ok) {
+    const txt = await response.text();
+    throw new Error(`Claude ${response.status}: ${txt.slice(0, 200)}`);
+  }
+
+  const json = await response.json();
+  const text = json.content?.[0]?.text || '';
+  if (!text) throw new Error('Claude: empty response');
+
+  const usage = json.usage || {};
+  const tokensIn = usage.input_tokens || 0;
+  const tokensOut = usage.output_tokens || 0;
+  const cost = (tokensIn / 1_000_000 * CLAUDE_MODEL.priceIn) + (tokensOut / 1_000_000 * CLAUDE_MODEL.priceOut);
+
+  console.log(`[generate_application] Claude: ${CLAUDE_MODEL.name}, tokens=${tokensIn}/${tokensOut}`);
+  return { text, model: `claude/${CLAUDE_MODEL.name}`, tokensIn, tokensOut, cost };
+}
+
+async function callLLM(claudeKey: string | null, geminiKey: string | null, groqKey: string | null, prompt: string, systemInstruction: string): Promise<LLMCallResult> {
+  const errors: string[] = [];
+
+  if (claudeKey) {
+    try {
+      return await callClaude(claudeKey, prompt, systemInstruction);
+    } catch (e: any) {
+      errors.push(`Claude: ${e.message}`);
+      console.log(`[generate_application] Claude failed, trying Gemini: ${e.message}`);
+    }
+  }
 
   if (geminiKey) {
     try {
       return await callGeminiWithFallback(geminiKey, prompt, systemInstruction);
     } catch (e: any) {
-      geminiErrors.push(e.message);
-      console.log(`[generate_application] Gemini failed, trying Groq fallback: ${e.message}`);
+      errors.push(`Gemini: ${e.message}`);
+      console.log(`[generate_application] Gemini failed, trying Groq: ${e.message}`);
     }
   }
 
@@ -153,11 +199,11 @@ async function callLLM(geminiKey: string | null, groqKey: string | null, prompt:
     try {
       return await callGroqFallback(groqKey, prompt, systemInstruction);
     } catch (e: any) {
-      throw new Error(`All LLMs failed. Gemini: ${geminiErrors.join('; ')} | Groq: ${e.message}`);
+      throw new Error(`All LLMs failed. ${errors.join(' | ')} | Groq: ${e.message}`);
     }
   }
 
-  throw new Error('No LLM API keys configured. Add GEMINI_API_KEY or GROQ_API_KEY to Supabase secrets.');
+  throw new Error('No LLM API keys configured. Add ANTHROPIC_API_KEY, GEMINI_API_KEY or GROQ_API_KEY to Supabase secrets.');
 }
 
 serve(async (req: Request) => {
@@ -170,9 +216,10 @@ serve(async (req: Request) => {
 
     if (!job_id) throw new Error('Job ID is required');
 
+    const claudeApiKey = Deno.env.get('ANTHROPIC_API_KEY') || null;
     const geminiApiKey = Deno.env.get('GEMINI_API_KEY') || null;
     const groqApiKey = Deno.env.get('GROQ_API_KEY') || null;
-    if (!geminiApiKey && !groqApiKey) throw new Error("No LLM key configured. Add GEMINI_API_KEY or GROQ_API_KEY to Supabase secrets.");
+    if (!claudeApiKey && !geminiApiKey && !groqApiKey) throw new Error("No LLM key configured. Add ANTHROPIC_API_KEY, GEMINI_API_KEY or GROQ_API_KEY to Supabase secrets.");
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -249,8 +296,8 @@ ${userPrompt}
 
 OUTPUT FORMAT — return valid JSON only, no markdown fences, no extra text:
 {
-   "soknad_no": "The application text in Norwegian (Bokmal)",
-   "translation_uk": "A translation in Ukrainian for the user"
+   "soknad_no": "The application text in Norwegian Bokmål",
+   "translation_uk": "Ukrainian translation (Cyrillic script — НЕ англійська, НЕ російська — тільки українська мова)"
 }`;
 
     const fullPrompt = `
@@ -264,7 +311,7 @@ OUTPUT FORMAT — return valid JSON only, no markdown fences, no extra text:
       ${profile.content}
     `;
 
-    const { text, model, tokensIn, tokensOut, cost } = await callLLM(geminiApiKey, groqApiKey, fullPrompt, systemInstruction);
+    const { text, model, tokensIn, tokensOut, cost } = await callLLM(claudeApiKey, geminiApiKey, groqApiKey, fullPrompt, systemInstruction);
 
     let contentObj;
     try {
