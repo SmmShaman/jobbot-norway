@@ -1,5 +1,5 @@
 
-const VERSION_STAMP = '2026-05-16-claude-primary';
+const VERSION_STAMP = '2026-05-16-gemini-primary';
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
 
@@ -177,24 +177,27 @@ async function callClaude(apiKey: string, prompt: string, systemInstruction: str
 async function callLLM(claudeKey: string | null, geminiKey: string | null, groqKey: string | null, prompt: string, systemInstruction: string): Promise<LLMCallResult> {
   const errors: string[] = [];
 
-  if (claudeKey) {
-    try {
-      return await callClaude(claudeKey, prompt, systemInstruction);
-    } catch (e: any) {
-      errors.push(`Claude: ${e.message}`);
-      console.log(`[generate_application] Claude failed, trying Gemini: ${e.message}`);
-    }
-  }
-
+  // Gemini first (primary — free tier, great instruction following)
   if (geminiKey) {
     try {
       return await callGeminiWithFallback(geminiKey, prompt, systemInstruction);
     } catch (e: any) {
       errors.push(`Gemini: ${e.message}`);
-      console.log(`[generate_application] Gemini failed, trying Groq: ${e.message}`);
+      console.log(`[generate_application] Gemini failed, trying Claude: ${e.message}`);
     }
   }
 
+  // Claude second (if Gemini fails)
+  if (claudeKey) {
+    try {
+      return await callClaude(claudeKey, prompt, systemInstruction);
+    } catch (e: any) {
+      errors.push(`Claude: ${e.message}`);
+      console.log(`[generate_application] Claude failed, trying Groq: ${e.message}`);
+    }
+  }
+
+  // Groq last resort
   if (groqKey) {
     try {
       return await callGroqFallback(groqKey, prompt, systemInstruction);
@@ -203,7 +206,7 @@ async function callLLM(claudeKey: string | null, geminiKey: string | null, groqK
     }
   }
 
-  throw new Error('No LLM API keys configured. Add ANTHROPIC_API_KEY, GEMINI_API_KEY or GROQ_API_KEY to Supabase secrets.');
+  throw new Error('No LLM API keys configured. Add GEMINI_API_KEY, ANTHROPIC_API_KEY or GROQ_API_KEY to Supabase secrets.');
 }
 
 serve(async (req: Request) => {
