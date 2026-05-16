@@ -1,5 +1,5 @@
 
-const VERSION_STAMP = '2026-04-30-gemini';
+const VERSION_STAMP = '2026-05-16-groq-fallback-authfix';
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
 
@@ -11,15 +11,19 @@ const corsHeaders = {
 };
 
 // Gemini model fallback chain — try most powerful first.
-// Pro was removed from Free tier on 2026-04-01, so Pro requires paid Gemini API access.
-// If Pro fails (auth/quota), we fall back to Flash, then Flash-Lite.
 const GEMINI_MODELS: Array<{ name: string; priceIn: number; priceOut: number }> = [
   { name: 'gemini-2.5-pro',         priceIn: 1.25, priceOut: 10.00 },
   { name: 'gemini-2.5-flash',       priceIn: 0.30, priceOut: 2.50 },
   { name: 'gemini-2.5-flash-lite',  priceIn: 0.10, priceOut: 0.40 },
 ];
 
-interface GeminiCallResult {
+// Groq fallback models (OpenAI-compatible API)
+const GROQ_MODELS: Array<{ name: string; priceIn: number; priceOut: number }> = [
+  { name: 'llama-3.3-70b-versatile', priceIn: 0.59, priceOut: 0.79 },
+  { name: 'llama-3.1-8b-instant',    priceIn: 0.05, priceOut: 0.08 },
+];
+
+interface LLMCallResult {
   text: string;
   model: string;
   tokensIn: number;
@@ -27,13 +31,12 @@ interface GeminiCallResult {
   cost: number;
 }
 
-async function callGeminiWithFallback(apiKey: string, prompt: string, systemInstruction: string): Promise<GeminiCallResult> {
+async function callGeminiWithFallback(apiKey: string, prompt: string, systemInstruction: string): Promise<LLMCallResult> {
   const errors: string[] = [];
 
   for (const model of GEMINI_MODELS) {
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model.name}:generateContent?key=${apiKey}`;
 
-    // Up to 2 retries per model on 5xx
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const response = await fetch(apiUrl, {
@@ -56,30 +59,25 @@ async function callGeminiWithFallback(apiKey: string, prompt: string, systemInst
             await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
             continue;
           }
-          break; // exhausted retries on this model — try next
+          break;
         }
 
         if (!response.ok) {
-          // 4xx (except 429): permission/quota/billing — skip this model
           const txt = await response.text();
           errors.push(`${model.name} ${response.status}: ${txt.slice(0, 200)}`);
           break;
         }
 
         const json = await response.json();
-        const candidates = json.candidates || [];
-        const text = candidates[0]?.content?.parts?.[0]?.text || '';
-        if (!text) {
-          errors.push(`${model.name}: empty response`);
-          break;
-        }
+        const text = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        if (!text) { errors.push(`${model.name}: empty response`); break; }
 
         const usage = json.usageMetadata || {};
         const tokensIn = usage.promptTokenCount || 0;
         const tokensOut = usage.candidatesTokenCount || 0;
         const cost = (tokensIn / 1_000_000 * model.priceIn) + (tokensOut / 1_000_000 * model.priceOut);
 
-        console.log(`[generate_application] Used model: ${model.name}, tokens=${tokensIn}/${tokensOut}, cost=$${cost.toFixed(4)}`);
+        console.log(`[generate_application] Gemini: ${model.name}, tokens=${tokensIn}/${tokensOut}`);
         return { text, model: model.name, tokensIn, tokensOut, cost };
       } catch (e: any) {
         errors.push(`${model.name} threw: ${e.message}`);
@@ -88,7 +86,78 @@ async function callGeminiWithFallback(apiKey: string, prompt: string, systemInst
     }
   }
 
-  throw new Error(`All Gemini models failed: ${errors.join(' | ')}`);
+  throw new Error(`Gemini failed: ${errors.join(' | ')}`);
+}
+
+async function callGroqFallback(apiKey: string, prompt: string, systemInstruction: string): Promise<LLMCallResult> {
+  const errors: string[] = [];
+
+  for (const model of GROQ_MODELS) {
+    try {
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: model.name,
+          messages: [
+            { role: 'system', content: systemInstruction },
+            { role: 'user', content: prompt }
+          ],
+          temperature: 0.7,
+          max_tokens: 4096,
+          response_format: { type: 'json_object' }
+        })
+      });
+
+      if (!response.ok) {
+        const txt = await response.text();
+        errors.push(`groq/${model.name} ${response.status}: ${txt.slice(0, 200)}`);
+        continue;
+      }
+
+      const json = await response.json();
+      const text = json.choices?.[0]?.message?.content || '';
+      if (!text) { errors.push(`groq/${model.name}: empty`); continue; }
+
+      const usage = json.usage || {};
+      const tokensIn = usage.prompt_tokens || 0;
+      const tokensOut = usage.completion_tokens || 0;
+      const cost = (tokensIn / 1_000_000 * model.priceIn) + (tokensOut / 1_000_000 * model.priceOut);
+
+      console.log(`[generate_application] Groq: ${model.name}, tokens=${tokensIn}/${tokensOut}`);
+      return { text, model: `groq/${model.name}`, tokensIn, tokensOut, cost };
+    } catch (e: any) {
+      errors.push(`groq/${model.name} threw: ${e.message}`);
+    }
+  }
+
+  throw new Error(`Groq failed: ${errors.join(' | ')}`);
+}
+
+async function callLLM(geminiKey: string | null, groqKey: string | null, prompt: string, systemInstruction: string): Promise<LLMCallResult> {
+  const geminiErrors: string[] = [];
+
+  if (geminiKey) {
+    try {
+      return await callGeminiWithFallback(geminiKey, prompt, systemInstruction);
+    } catch (e: any) {
+      geminiErrors.push(e.message);
+      console.log(`[generate_application] Gemini failed, trying Groq fallback: ${e.message}`);
+    }
+  }
+
+  if (groqKey) {
+    try {
+      return await callGroqFallback(groqKey, prompt, systemInstruction);
+    } catch (e: any) {
+      throw new Error(`All LLMs failed. Gemini: ${geminiErrors.join('; ')} | Groq: ${e.message}`);
+    }
+  }
+
+  throw new Error('No LLM API keys configured. Add GEMINI_API_KEY or GROQ_API_KEY to Supabase secrets.');
 }
 
 serve(async (req: Request) => {
@@ -101,8 +170,9 @@ serve(async (req: Request) => {
 
     if (!job_id) throw new Error('Job ID is required');
 
-    const geminiApiKey = Deno.env.get('GEMINI_API_KEY');
-    if (!geminiApiKey) throw new Error("Missing GEMINI_API_KEY secret.");
+    const geminiApiKey = Deno.env.get('GEMINI_API_KEY') || null;
+    const groqApiKey = Deno.env.get('GROQ_API_KEY') || null;
+    if (!geminiApiKey && !groqApiKey) throw new Error("No LLM key configured. Add GEMINI_API_KEY or GROQ_API_KEY to Supabase secrets.");
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -115,12 +185,8 @@ serve(async (req: Request) => {
     // Validate that the caller's JWT matches the requested user_id (prevent cross-user forgery)
     const authHeader = req.headers.get('authorization') ?? req.headers.get('apikey') ?? '';
     if (authHeader.startsWith('Bearer ')) {
-      const anonUrl = Deno.env.get('SUPABASE_URL') ?? '';
-      const anonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
-      const userClient = createClient(anonUrl, anonKey, {
-        global: { headers: { authorization: authHeader } }
-      });
-      const { data: { user }, error: authError } = await userClient.auth.getUser();
+      const token = authHeader.replace('Bearer ', '');
+      const { data: { user }, error: authError } = await supabase.auth.getUser(token);
       if (authError || !user) {
         throw new Error("Authentication required. Please log in.");
       }
@@ -197,7 +263,7 @@ You must output valid JSON only, with no markdown fences or extra text.
       ${profile.content}
     `;
 
-    const { text, model, tokensIn, tokensOut, cost } = await callGeminiWithFallback(geminiApiKey, fullPrompt, systemInstruction);
+    const { text, model, tokensIn, tokensOut, cost } = await callLLM(geminiApiKey, groqApiKey, fullPrompt, systemInstruction);
 
     let contentObj;
     try {
