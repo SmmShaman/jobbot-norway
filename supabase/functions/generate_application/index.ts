@@ -1,5 +1,5 @@
 
-const VERSION_STAMP = '2026-05-16-groq-fallback-authfix';
+const VERSION_STAMP = '2026-05-16-groq-fallback-authfix-promptfix';
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
 
@@ -239,20 +239,21 @@ serve(async (req: Request) => {
       .single();
     if (settings?.application_prompt) userPrompt = settings.application_prompt;
 
-    // 6. Build prompt + call Gemini with fallback
+    // 6. Build prompt + call LLM
+    // Rules go in system instruction (higher authority for both Gemini and Groq)
     const systemInstruction = `You are an expert career consultant for the Norwegian job market.
 Your task is to write a "Soknad" (Cover Letter) based on the provided Job Description and Candidate Profile.
 
-OUTPUT FORMAT:
-You must output valid JSON only, with no markdown fences or extra text.
+WRITING INSTRUCTIONS (follow strictly):
+${userPrompt}
+
+OUTPUT FORMAT — return valid JSON only, no markdown fences, no extra text:
 {
    "soknad_no": "The application text in Norwegian (Bokmal)",
    "translation_uk": "A translation in Ukrainian for the user"
 }`;
 
     const fullPrompt = `
-      ${userPrompt}
-
       --- JOB DESCRIPTION ---
       Title: ${job.title}
       Company: ${job.company}
