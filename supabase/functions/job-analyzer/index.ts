@@ -1,5 +1,5 @@
 
-const VERSION_STAMP = '2026-03-29-force-redeploy';
+const VERSION_STAMP = '2026-06-19-llama4-primary';
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
 
@@ -10,10 +10,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const PRICE_PER_1M_INPUT = 0.30;
-const PRICE_PER_1M_OUTPUT = 2.50;
-
-const GEMINI_MODEL = 'gemini-2.5-flash';
+// Groq Llama 4 — primary for job analysis (fast, cheap, great reasoning)
+const GROQ_MODEL_PRIMARY  = 'meta-llama/llama-4-maverick-17b-128e-instruct';
+const GROQ_MODEL_FALLBACK = 'meta-llama/llama-4-scout-17b-16e-instruct';
+const PRICE_PER_1M_INPUT  = 0.50;  // Llama 4 Maverick via Groq
+const PRICE_PER_1M_OUTPUT = 0.77;
 
 const DEFAULT_ANALYSIS_PROMPT = `
 You are a Vibe & Fit Scanner for Recruitment.
@@ -180,12 +181,11 @@ CRITICAL: Your response MUST be valid JSON with this EXACT structure:
     const { data: jobs } = await supabase.from('jobs').select('id, title, company, description, location').in('id', jobIds);
     if (!jobs) throw new Error(`Error fetching jobs`);
 
-    // 4. Gemini API
-    const geminiApiKey = Deno.env.get('GEMINI_API_KEY');
+    // 4. Groq Llama 4 API
+    const groqApiKey = Deno.env.get('GROQ_API_KEY');
 
-    if (!geminiApiKey) throw new Error("GEMINI_API_KEY secret missing.");
+    if (!groqApiKey) throw new Error("GROQ_API_KEY secret missing.");
 
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiApiKey}`;
     const results = [];
 
     for (const job of jobs) {
@@ -216,39 +216,52 @@ CRITICAL: Your response MUST be valid JSON with this EXACT structure:
         ${job.description}
       `;
 
-      try {
-        const response = await fetch(apiUrl, {
+      const systemText = `You are a helpful HR assistant that outputs strictly valid JSON only (no markdown, no extra text). IMPORTANT: Write all text content (analysis, tasks, explanations) in ${targetLang} language.`;
+
+      async function callGroqModel(model: string): Promise<Response> {
+        const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${groqApiKey}`
+          },
           body: JSON.stringify({
-            contents: [
-              { role: 'user', parts: [{ text: fullPrompt }] }
+            model,
+            messages: [
+              { role: 'system', content: systemText },
+              { role: 'user', content: fullPrompt }
             ],
-            systemInstruction: {
-              parts: [{ text: `You are a helpful HR assistant that outputs strictly valid JSON. IMPORTANT: Write all text content (analysis, tasks, explanations) in ${targetLang} language.` }]
-            },
-            generationConfig: {
-              temperature: 0.3,
-              responseMimeType: 'application/json'
-            }
+            temperature: 0.3,
+            max_tokens: 4096,
+            response_format: { type: 'json_object' }
           })
         });
+        if (resp.status === 429) throw new Error(`Groq quota exceeded (429) on ${model}`);
+        if (!resp.ok) throw new Error(`Groq API Error ${resp.status} on ${model}`);
+        return resp;
+      }
 
-        if (response.status === 429) {
-          throw new Error('Gemini quota exceeded (429). Daily free-tier limit reached — try again in 24 hours or check billing at console.cloud.google.com.');
+      try {
+        let groqResponse: Response;
+        let modelUsed = GROQ_MODEL_PRIMARY;
+        try {
+          groqResponse = await callGroqModel(GROQ_MODEL_PRIMARY);
+        } catch (e: any) {
+          console.warn(`[job-analyzer] Primary model failed (${e.message}), trying fallback`);
+          modelUsed = GROQ_MODEL_FALLBACK;
+          groqResponse = await callGroqModel(GROQ_MODEL_FALLBACK);
         }
-        if (!response.ok) throw new Error(`Gemini API Error: ${response.status}`);
-        const json = await response.json();
 
-        const candidates = json.candidates || [];
-        if (!candidates.length) throw new Error('No candidates in Gemini response');
-        const textContent = candidates[0]?.content?.parts?.[0]?.text || '';
+        const json = await groqResponse.json();
+        const textContent = json.choices?.[0]?.message?.content || '';
+        if (!textContent) throw new Error('Empty response from Groq');
         const content = JSON.parse(textContent);
 
+        console.log(`[job-analyzer] Groq model used: ${modelUsed}`);
         let cost = 0;
-        const usageMetadata = json.usageMetadata || {};
-        let tokensIn = usageMetadata.promptTokenCount || 0;
-        let tokensOut = usageMetadata.candidatesTokenCount || 0;
+        const usage = json.usage || {};
+        let tokensIn = usage.prompt_tokens || 0;
+        let tokensOut = usage.completion_tokens || 0;
         cost = (tokensIn / 1000000 * PRICE_PER_1M_INPUT) + (tokensOut / 1000000 * PRICE_PER_1M_OUTPUT);
 
         // Validate and normalize Aura data

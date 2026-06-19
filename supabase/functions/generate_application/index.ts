@@ -1,5 +1,5 @@
 
-const VERSION_STAMP = '2026-05-16-gemini-primary';
+const VERSION_STAMP = '2026-06-19-claude-primary';
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
 
@@ -10,9 +10,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Gemini model fallback chain — try most powerful first.
+// Gemini fallback chain (no Pro — too expensive; Flash is quality enough as backup)
 const GEMINI_MODELS: Array<{ name: string; priceIn: number; priceOut: number }> = [
-  { name: 'gemini-2.5-pro',         priceIn: 1.25, priceOut: 10.00 },
   { name: 'gemini-2.5-flash',       priceIn: 0.30, priceOut: 2.50 },
   { name: 'gemini-2.5-flash-lite',  priceIn: 0.10, priceOut: 0.40 },
 ];
@@ -23,8 +22,8 @@ const GROQ_MODELS: Array<{ name: string; priceIn: number; priceOut: number }> = 
   { name: 'llama-3.1-8b-instant',    priceIn: 0.05, priceOut: 0.08 },
 ];
 
-// Anthropic Claude models — primary LLM (best instruction following)
-const CLAUDE_MODEL = { name: 'claude-haiku-4-5-20251001', priceIn: 0.80, priceOut: 4.00 };
+// Anthropic Claude — primary model for søknad generation
+const CLAUDE_MODEL = { name: 'claude-sonnet-4-6', priceIn: 3.00, priceOut: 15.00 };
 
 interface LLMCallResult {
   text: string;
@@ -177,23 +176,23 @@ async function callClaude(apiKey: string, prompt: string, systemInstruction: str
 async function callLLM(claudeKey: string | null, geminiKey: string | null, groqKey: string | null, prompt: string, systemInstruction: string): Promise<LLMCallResult> {
   const errors: string[] = [];
 
-  // Gemini first (primary — free tier, great instruction following)
-  if (geminiKey) {
-    try {
-      return await callGeminiWithFallback(geminiKey, prompt, systemInstruction);
-    } catch (e: any) {
-      errors.push(`Gemini: ${e.message}`);
-      console.log(`[generate_application] Gemini failed, trying Claude: ${e.message}`);
-    }
-  }
-
-  // Claude second (if Gemini fails)
+  // Claude first — primary for søknad generation
   if (claudeKey) {
     try {
       return await callClaude(claudeKey, prompt, systemInstruction);
     } catch (e: any) {
       errors.push(`Claude: ${e.message}`);
-      console.log(`[generate_application] Claude failed, trying Groq: ${e.message}`);
+      console.log(`[generate_application] Claude failed, trying Gemini: ${e.message}`);
+    }
+  }
+
+  // Gemini second (Flash fallback — no Pro)
+  if (geminiKey) {
+    try {
+      return await callGeminiWithFallback(geminiKey, prompt, systemInstruction);
+    } catch (e: any) {
+      errors.push(`Gemini: ${e.message}`);
+      console.log(`[generate_application] Gemini failed, trying Groq: ${e.message}`);
     }
   }
 
@@ -206,7 +205,7 @@ async function callLLM(claudeKey: string | null, geminiKey: string | null, groqK
     }
   }
 
-  throw new Error('No LLM API keys configured. Add GEMINI_API_KEY, ANTHROPIC_API_KEY or GROQ_API_KEY to Supabase secrets.');
+  throw new Error('No LLM API keys configured. Add ANTHROPIC_API_KEY, GEMINI_API_KEY or GROQ_API_KEY to Supabase secrets.');
 }
 
 serve(async (req: Request) => {
