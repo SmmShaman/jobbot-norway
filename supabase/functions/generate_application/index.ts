@@ -231,16 +231,20 @@ serve(async (req: Request) => {
       throw new Error("user_id is required for generating applications. Please log in first.");
     }
 
-    // Validate that the caller's JWT matches the requested user_id (prevent cross-user forgery)
+    // Validate that the caller's JWT matches the requested user_id (prevent cross-user forgery).
+    // Trusted backend callers (worker, GitHub Actions) authenticate with the service-role key
+    // itself, which only our own infra holds — skip the per-user check for them.
     const authHeader = req.headers.get('authorization') ?? req.headers.get('apikey') ?? '';
     if (authHeader.startsWith('Bearer ')) {
       const token = authHeader.replace('Bearer ', '');
-      const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-      if (authError || !user) {
-        throw new Error("Authentication required. Please log in.");
-      }
-      if (user.id !== user_id) {
-        throw new Error("Unauthorized: user_id does not match authenticated user.");
+      if (token !== supabaseKey) {
+        const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+        if (authError || !user) {
+          throw new Error("Authentication required. Please log in.");
+        }
+        if (user.id !== user_id) {
+          throw new Error("Unauthorized: user_id does not match authenticated user.");
+        }
       }
     }
 
