@@ -1,5 +1,5 @@
 
-const VERSION_STAMP = '2026-06-19-claude-primary';
+const VERSION_STAMP = '2026-07-18-manual-agent-draft';
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
 
@@ -10,203 +10,9 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Gemini fallback chain (no Pro — too expensive; Flash is quality enough as backup)
-const GEMINI_MODELS: Array<{ name: string; priceIn: number; priceOut: number }> = [
-  { name: 'gemini-2.5-flash',       priceIn: 0.30, priceOut: 2.50 },
-  { name: 'gemini-2.5-flash-lite',  priceIn: 0.10, priceOut: 0.40 },
-];
-
-// Groq fallback models (OpenAI-compatible API)
-const GROQ_MODELS: Array<{ name: string; priceIn: number; priceOut: number }> = [
-  { name: 'llama-3.3-70b-versatile', priceIn: 0.59, priceOut: 0.79 },
-  { name: 'llama-3.1-8b-instant',    priceIn: 0.05, priceOut: 0.08 },
-];
-
-// Anthropic Claude — primary model for søknad generation
-const CLAUDE_MODEL = { name: 'claude-sonnet-4-6', priceIn: 3.00, priceOut: 15.00 };
-
-interface LLMCallResult {
-  text: string;
-  model: string;
-  tokensIn: number;
-  tokensOut: number;
-  cost: number;
-}
-
-async function callGeminiWithFallback(apiKey: string, prompt: string, systemInstruction: string): Promise<LLMCallResult> {
-  const errors: string[] = [];
-
-  for (const model of GEMINI_MODELS) {
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model.name}:generateContent?key=${apiKey}`;
-
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-            systemInstruction: { parts: [{ text: systemInstruction }] },
-            generationConfig: {
-              temperature: 0.7,
-              responseMimeType: 'application/json',
-              maxOutputTokens: 4096
-            }
-          })
-        });
-
-        if (response.status >= 500 || response.status === 429) {
-          errors.push(`${model.name} ${response.status}`);
-          if (attempt < 1) {
-            await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
-            continue;
-          }
-          break;
-        }
-
-        if (!response.ok) {
-          const txt = await response.text();
-          errors.push(`${model.name} ${response.status}: ${txt.slice(0, 200)}`);
-          break;
-        }
-
-        const json = await response.json();
-        const text = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
-        if (!text) { errors.push(`${model.name}: empty response`); break; }
-
-        const usage = json.usageMetadata || {};
-        const tokensIn = usage.promptTokenCount || 0;
-        const tokensOut = usage.candidatesTokenCount || 0;
-        const cost = (tokensIn / 1_000_000 * model.priceIn) + (tokensOut / 1_000_000 * model.priceOut);
-
-        console.log(`[generate_application] Gemini: ${model.name}, tokens=${tokensIn}/${tokensOut}`);
-        return { text, model: model.name, tokensIn, tokensOut, cost };
-      } catch (e: any) {
-        errors.push(`${model.name} threw: ${e.message}`);
-        break;
-      }
-    }
-  }
-
-  throw new Error(`Gemini failed: ${errors.join(' | ')}`);
-}
-
-async function callGroqFallback(apiKey: string, prompt: string, systemInstruction: string): Promise<LLMCallResult> {
-  const errors: string[] = [];
-
-  for (const model of GROQ_MODELS) {
-    try {
-      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: model.name,
-          messages: [
-            { role: 'system', content: systemInstruction },
-            { role: 'user', content: prompt }
-          ],
-          temperature: 0.7,
-          max_tokens: 4096,
-          response_format: { type: 'json_object' }
-        })
-      });
-
-      if (!response.ok) {
-        const txt = await response.text();
-        errors.push(`groq/${model.name} ${response.status}: ${txt.slice(0, 200)}`);
-        continue;
-      }
-
-      const json = await response.json();
-      const text = json.choices?.[0]?.message?.content || '';
-      if (!text) { errors.push(`groq/${model.name}: empty`); continue; }
-
-      const usage = json.usage || {};
-      const tokensIn = usage.prompt_tokens || 0;
-      const tokensOut = usage.completion_tokens || 0;
-      const cost = (tokensIn / 1_000_000 * model.priceIn) + (tokensOut / 1_000_000 * model.priceOut);
-
-      console.log(`[generate_application] Groq: ${model.name}, tokens=${tokensIn}/${tokensOut}`);
-      return { text, model: `groq/${model.name}`, tokensIn, tokensOut, cost };
-    } catch (e: any) {
-      errors.push(`groq/${model.name} threw: ${e.message}`);
-    }
-  }
-
-  throw new Error(`Groq failed: ${errors.join(' | ')}`);
-}
-
-async function callClaude(apiKey: string, prompt: string, systemInstruction: string): Promise<LLMCallResult> {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01'
-    },
-    body: JSON.stringify({
-      model: CLAUDE_MODEL.name,
-      max_tokens: 4096,
-      system: systemInstruction,
-      messages: [{ role: 'user', content: prompt }]
-    })
-  });
-
-  if (!response.ok) {
-    const txt = await response.text();
-    throw new Error(`Claude ${response.status}: ${txt.slice(0, 200)}`);
-  }
-
-  const json = await response.json();
-  const text = json.content?.[0]?.text || '';
-  if (!text) throw new Error('Claude: empty response');
-
-  const usage = json.usage || {};
-  const tokensIn = usage.input_tokens || 0;
-  const tokensOut = usage.output_tokens || 0;
-  const cost = (tokensIn / 1_000_000 * CLAUDE_MODEL.priceIn) + (tokensOut / 1_000_000 * CLAUDE_MODEL.priceOut);
-
-  console.log(`[generate_application] Claude: ${CLAUDE_MODEL.name}, tokens=${tokensIn}/${tokensOut}`);
-  return { text, model: `claude/${CLAUDE_MODEL.name}`, tokensIn, tokensOut, cost };
-}
-
-async function callLLM(claudeKey: string | null, geminiKey: string | null, groqKey: string | null, prompt: string, systemInstruction: string): Promise<LLMCallResult> {
-  const errors: string[] = [];
-
-  // Claude first — primary for søknad generation
-  if (claudeKey) {
-    try {
-      return await callClaude(claudeKey, prompt, systemInstruction);
-    } catch (e: any) {
-      errors.push(`Claude: ${e.message}`);
-      console.log(`[generate_application] Claude failed, trying Gemini: ${e.message}`);
-    }
-  }
-
-  // Gemini second (Flash fallback — no Pro)
-  if (geminiKey) {
-    try {
-      return await callGeminiWithFallback(geminiKey, prompt, systemInstruction);
-    } catch (e: any) {
-      errors.push(`Gemini: ${e.message}`);
-      console.log(`[generate_application] Gemini failed, trying Groq: ${e.message}`);
-    }
-  }
-
-  // Groq last resort
-  if (groqKey) {
-    try {
-      return await callGroqFallback(groqKey, prompt, systemInstruction);
-    } catch (e: any) {
-      throw new Error(`All LLMs failed. ${errors.join(' | ')} | Groq: ${e.message}`);
-    }
-  }
-
-  throw new Error('No LLM API keys configured. Add ANTHROPIC_API_KEY, GEMINI_API_KEY or GROQ_API_KEY to Supabase secrets.');
-}
+// No LLM API calls here anymore. Cover letters are written manually by the Jobbot
+// agent (no paid Claude/Gemini/Groq key involved) and picked up by a polling task
+// that fills in cover_letter_no/cover_letter_uk on the 'pending_manual' row below.
 
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
@@ -217,11 +23,6 @@ serve(async (req: Request) => {
     const { job_id, user_id } = await req.json();
 
     if (!job_id) throw new Error('Job ID is required');
-
-    const claudeApiKey = Deno.env.get('ANTHROPIC_API_KEY') || null;
-    const geminiApiKey = Deno.env.get('GEMINI_API_KEY') || null;
-    const groqApiKey = Deno.env.get('GROQ_API_KEY') || null;
-    if (!claudeApiKey && !geminiApiKey && !groqApiKey) throw new Error("No LLM key configured. Add ANTHROPIC_API_KEY, GEMINI_API_KEY or GROQ_API_KEY to Supabase secrets.");
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -250,7 +51,8 @@ serve(async (req: Request) => {
 
     console.log(`[generate_application ${VERSION_STAMP}] Processing for user: ${user_id}`);
 
-    // 2. Check existing application for this user
+    // Check existing application for this user — covers both finished drafts
+    // and ones already queued for manual writing.
     const { data: existingApp } = await supabase
       .from('applications')
       .select('*')
@@ -260,96 +62,35 @@ serve(async (req: Request) => {
       .single();
 
     if (existingApp) {
-      return new Response(JSON.stringify({ success: true, application: existingApp, message: "Returning existing application" }), {
+      return new Response(JSON.stringify({
+        success: true,
+        application: existingApp,
+        pending: existingApp.status === 'pending_manual',
+        message: existingApp.status === 'pending_manual' ? "Draft queued for manual writing" : "Returning existing application"
+      }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
 
-    // 3. Job description
     const { data: job } = await supabase.from('jobs').select('description, title, company').eq('id', job_id).single();
     if (!job || !job.description) {
       throw new Error("Job description missing. Please click 'Extract Details' first.");
     }
 
-    // 4. Active profile (filtered by user)
-    const { data: profile, error: profileError } = await supabase
-      .from('cv_profiles')
-      .select('content')
-      .eq('is_active', true)
-      .eq('user_id', user_id)
-      .single();
-
-    if (profileError || !profile?.content) {
-      throw new Error(`No active CV profile found for your account. Go to Settings → Resume and create/activate a profile.`);
-    }
-
-    // 5. Custom prompt (per-user)
-    let userPrompt = "Write a professional cover letter in Norwegian (Bokmål). Make it formal but personable.";
-    const { data: settings } = await supabase
-      .from('user_settings')
-      .select('application_prompt')
-      .eq('user_id', user_id)
-      .single();
-    if (settings?.application_prompt) userPrompt = settings.application_prompt;
-
-    // 6. Build prompt + call LLM
-    // Rules go in system instruction (higher authority for both Gemini and Groq)
-    const systemInstruction = `You are an expert career consultant for the Norwegian job market.
-Your task is to write a "Soknad" (Cover Letter) based on the provided Job Description and Candidate Profile.
-
-WRITING INSTRUCTIONS (follow strictly):
-${userPrompt}
-
-OUTPUT FORMAT — return valid JSON only, no markdown fences, no extra text:
-{
-   "soknad_no": "The application text in Norwegian Bokmål",
-   "translation_uk": "Ukrainian translation (Cyrillic script — НЕ англійська, НЕ російська — тільки українська мова)"
-}`;
-
-    const fullPrompt = `
-      --- JOB DESCRIPTION ---
-      Title: ${job.title}
-      Company: ${job.company}
-
-      ${job.description}
-
-      --- CANDIDATE PROFILE ---
-      ${profile.content}
-    `;
-
-    const { text, model, tokensIn, tokensOut, cost } = await callLLM(claudeApiKey, geminiApiKey, groqApiKey, fullPrompt, systemInstruction);
-
-    let contentObj;
-    try {
-      let raw = text.trim();
-      if (raw.startsWith('```')) {
-        raw = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
-      }
-      contentObj = JSON.parse(raw);
-    } catch (e) {
-      console.error("Failed to parse AI response as JSON:", text);
-      throw new Error("AI did not return valid JSON. Try again.");
-    }
-
-    if (!contentObj.soknad_no) {
-      throw new Error("AI response missing 'soknad_no' field.");
-    }
-
-    // 7. Save
-    const { data: savedApp, error: saveError } = await supabase
+    // No LLM call — queue for manual writing by the Jobbot agent. A polling task
+    // picks up 'pending_manual' rows, writes cover_letter_no/cover_letter_uk, and
+    // flips status to 'draft'.
+    const { data: pendingApp, error: saveError } = await supabase
       .from('applications')
       .insert([{
         job_id,
         user_id,
-        cover_letter_no: contentObj.soknad_no,
-        cover_letter_uk: contentObj.translation_uk || null,
-        status: 'draft',
+        status: 'pending_manual',
         created_at: new Date().toISOString(),
-        generated_prompt: fullPrompt,
-        prompt_source: `web-dashboard:${model}`,
-        cost_usd: cost,
-        tokens_input: tokensIn,
-        tokens_output: tokensOut
+        prompt_source: 'pending:manual-agent',
+        cost_usd: 0,
+        tokens_input: 0,
+        tokens_output: 0
       }])
       .select()
       .single();
@@ -359,18 +100,7 @@ OUTPUT FORMAT — return valid JSON only, no markdown fences, no extra text:
       throw new Error(`Database Save Error: ${saveError.message}`);
     }
 
-    await supabase.from('system_logs').insert({
-      user_id,
-      event_type: 'APPLICATION_GEN',
-      status: 'SUCCESS',
-      message: `Cover letter: "${job.title}" at ${job.company} [${model}]`,
-      tokens_used: tokensIn + tokensOut,
-      cost_usd: cost,
-      source: 'WEB_DASHBOARD',
-      details: { job_id, application_id: savedApp?.id, model, tokens_input: tokensIn, tokens_output: tokensOut }
-    });
-
-    return new Response(JSON.stringify({ success: true, application: savedApp }), {
+    return new Response(JSON.stringify({ success: true, application: pendingApp, pending: true, message: "Queued for manual draft" }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
 

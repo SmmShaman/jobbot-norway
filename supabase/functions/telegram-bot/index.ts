@@ -280,6 +280,11 @@ async function runBackgroundJob(update: any) {
 
                     const app = genResult.application;
 
+                    if (genResult.pending || (!app.cover_letter_no && !app.cover_letter_uk)) {
+                        await sendTelegram(chatId, "⏳ <b>Чернетку пише агент вручну</b> (без платного Claude API) — надішлю сюди, як буде готова (зазвичай кілька хвилин).");
+                        return;
+                    }
+
                     // Single language cover letter based on user preference
                     const userLang = await getUserLanguage(supabase, userId);
                     const maxLen = 1500;
