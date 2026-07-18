@@ -4327,7 +4327,7 @@ async def monitor_task_status(task_id, chat_id: str = None, job_title: str = Non
 
     headers = skyvern_headers()
     monitor_start = datetime.now()
-    MAX_MONITOR_MINUTES = 15  # Hard limit — cancel task if monitoring exceeds this
+    MAX_MONITOR_MINUTES = 45  # Hard limit — free-tier Gemini Flash paces steps to ~60s (429 backoff), a full form needs 20-30 min
 
     # Detailed reporting state
     seen_step_count = 0
