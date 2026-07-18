@@ -1,0 +1,172 @@
+# Form Filling (Playwright, agent-driven)
+
+## Sync rule
+
+This directory (`Jobbot-NO/skills/form-filling/` in the repo) is the **source of
+truth**. `~/.claude/skills/form-filling/` is a copy kept only so the skill
+auto-loads in every future session. **After any change here, re-copy it to
+`~/.claude/skills/form-filling/`.** Never edit the `~/.claude` copy directly.
+
+## Why this exists
+
+Skyvern (hosted browser automation) is being phased out for job-application
+forms. Instead, the agent itself drives a local headless Chromium via
+Playwright, directly in its own container — no separate worker/service needed.
+This is a generic method for filling *any* recruitment site's application
+form, not tied to one site. Site-specific knowledge goes in `sites/*.json`.
+
+## Environment constants (fixed, do not vary per site)
+
+- Chromium executable: `/home/node/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome`
+- Playwright package: `playwright-core@1.61.1` — **must stay pinned to this
+  exact version**, it must match the `chromium-1228` build above. Installing a
+  different playwright-core version without also updating the chromium build
+  (or vice versa) will break launch.
+- Launch args: `{ executablePath, headless: true, args: ['--no-sandbox'] }`
+- Install `playwright-core` **locally** in the working directory (e.g. `pnpm
+  add playwright-core@1.61.1` inside a folder with its own minimal
+  `package.json`), not just globally via `install_packages` — ESM `import`
+  does not consult `NODE_PATH`, so a global-only install is invisible to `.mjs`
+  scripts run from an arbitrary cwd. Always run fill scripts with cwd = the
+  folder containing that local `node_modules`.
+- **Screenshots**: never read a full-size PNG with the Read tool. Always
+  downscale first (`assets/screenshot.mjs`, `ffmpeg -vf scale=700:-1 -q:v 6`).
+  Unlike text, images don't compress under context auto-compaction — a handful
+  of full-size screenshots is enough to overflow the prompt.
+
+## Phases
+
+1. **Recon** — visit the form fresh, headless, and map its structure before
+   writing any fill logic. Use `assets/recon.mjs` (`dumpFields`, `dumpButtons`,
+   `findByExactText`) to enumerate inputs/buttons and their labels. Take a
+   downscaled screenshot at each step. Record everything learned into a new
+   `sites/<domain>.json` profile (schema below) — do not skip straight to
+   writing a fill script from guesses.
+2. **Field mapping by label, not by guessed name** — recruitment sites
+   frequently use framework-generated or per-job-dynamic field names (e.g.
+   `text_7905`, or React `useId()` ids like `:rv:`). The *label text* is the
+   stable, human-meaningful anchor. Map fields by their label first, and only
+   fall back to structural selectors (`input[name^="text_"]`, "the input
+   nearest this label") when no stable name/id exists.
+3. **Fill — do NOT submit.** Fill every field: personal info, CV upload
+   (`assets/file-upload.mjs`), custom per-job questions, cover letter
+   (`assets/text-fields.mjs` — check char limit BEFORE inserting, some fields
+   are contenteditable divs, not real `<textarea>`s), phone number
+   (`assets/phone-input.mjs` if the site has a masked phone widget). Locate but
+   do not click the final submit button.
+4. **Screenshot + field→value list** — capture a downscaled screenshot of the
+   fully-filled form (`assets/screenshot.mjs`), and separately produce a plain
+   text list of every field name/label and the value that was entered into it.
+5. **Confirmation via tech-bot** — send the screenshot + field→value list to
+   the tech-bot with two buttons: "✅ Все вірно — відправляй" / "❌ Скасувати".
+   Reuse the existing `application_confirmations` DB table / confirm/cancel
+   button pattern already used in `telegram-bot/index.ts`
+   (`confirm_apply_*`/`cancel_apply_*`) rather than inventing a new one.
+6. **Re-run + submit** — on "✅", re-run the *same* fill script (cheap, a few
+   seconds) so no browser session needs to stay open while the user
+   deliberates, then click the real submit button this time.
+7. **Final screenshot + status update** — capture a downscaled screenshot
+   confirming submission, set `applications.status = 'sent'`.
+8. **Error handling** — on any failure (cover letter over the site's char
+   limit, unexpected form step, missing selector, etc.), capture a screenshot
+   and set `applications.status = 'manual_review'` rather than guessing or
+   retrying blindly.
+
+## Known gotchas (check for these on every new site)
+
+- **Cookie banners** — dismiss first, before anything else
+  (`assets/cookie-banner.mjs` tries a list of known accept-button texts).
+- **Character limits on text fields** (cover letter, free-text answers) — the
+  displayed limit ("0/1500") is the ground truth; verify it live via recon
+  rather than trusting a limit stated elsewhere, and check length BEFORE
+  inserting text, not after.
+- **Multi-step / wizard forms** — steps are often gated behind a "Next"-style
+  button that must be clicked to reveal the next step's fields; match this
+  button by role+name (`page.getByRole('button', { name: 'Neste' })`), not by
+  `getByText`, which can false-positive match unrelated paragraph text
+  containing the same words.
+- **File upload widgets** — try native `setInputFiles` first; if the widget is
+  a custom drop-zone that hides/intercepts the real input, fall back to the
+  DataTransfer-based approach in `assets/file-upload.mjs`.
+- **Masked phone inputs with a decorative country dropdown** — the dropdown
+  may have zero effect on the actual value; see `assets/phone-input.mjs`.
+- **contenteditable fields disguised as textareas** — a field can look exactly
+  like a `<textarea>` visually and even have an associated `<label for="...">`
+  pointing at it, while actually being a `<div contenteditable="plaintext-only">`.
+  `locator('textarea')` will silently find nothing — always verify the real
+  tag via recon (`findByExactText`) before assuming.
+- **Store test assets (CV PDFs etc.) in a path that survives container
+  rebuilds** (e.g. `/workspace/agent/assets/`), never in `/tmp`, which is wiped
+  on rebuild.
+
+## `sites/<domain>.json` profile schema
+
+Every new site gets one file, named after its application-form domain (e.g.
+`recman.page.json`, not the job board's own domain if it delegates to a
+third-party form host). Shape:
+
+```json
+{
+  "domain": "apply.recman.page",
+  "notes": "Free-text: anything about this site worth remembering that doesn't fit a field below.",
+  "entryFlow": [
+    { "step": "dismiss cookie banner", "selector": "text=Aksepter alle" },
+    { "step": "click apply button", "selector": "text=Søk nå" }
+  ],
+  "steps": [
+    {
+      "name": "Last opp CV",
+      "fields": [
+        { "label": "CV", "selector": "input[type=\"file\"]", "type": "file", "gotcha": null }
+      ],
+      "advanceButton": { "role": "button", "name": "Neste" }
+    },
+    {
+      "name": "Profil",
+      "fields": [
+        { "label": "Fornavn*", "selector": "input[name=\"firstName\"]", "type": "text" },
+        { "label": "Etternavn*", "selector": "input[name=\"lastName\"]", "type": "text" },
+        { "label": "E-post*", "selector": "input[name=\"email\"]", "type": "text" },
+        {
+          "label": "phone",
+          "selector": "input[name=\"mobilePhone.number\"]",
+          "type": "maskedPhone",
+          "gotcha": "country dropdown is cosmetic; type calling-code+number digits directly, see assets/phone-input.mjs"
+        }
+      ],
+      "advanceButton": { "role": "button", "name": "Neste" }
+    },
+    {
+      "name": "Spørsmål",
+      "fields": [
+        {
+          "label": "dynamic per-job questions",
+          "selector": "input[name^=\"text_\"]",
+          "type": "text",
+          "gotcha": "field names are per-job dynamic (e.g. text_7905); match by associated <label> text, answer is judgment-based per question"
+        }
+      ],
+      "advanceButton": { "role": "button", "name": "Neste" }
+    },
+    {
+      "name": "Gjennomgå og søk",
+      "fields": [
+        {
+          "label": "Søknadsbrev",
+          "selector": ".ApplyV2Textarea__textarea[contenteditable]",
+          "type": "contenteditable",
+          "charLimit": 1500,
+          "gotcha": "not a real <textarea>; use assets/text-fields.mjs fillContentEditable"
+        }
+      ],
+      "submitButton": { "role": "button", "name": "Søk" }
+    }
+  ]
+}
+```
+
+Field object shape: `label` (human-readable, from the DOM), `selector`
+(Playwright selector/locator string), `type` (`text` | `file` | `maskedPhone`
+| `contenteditable` | `select` etc.), `charLimit` (optional), `gotcha`
+(optional free-text warning). Step object shape: `name`, `fields[]`, and either
+`advanceButton` (mid-wizard) or `submitButton` (final step).
