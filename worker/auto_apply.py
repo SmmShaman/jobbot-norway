@@ -136,7 +136,7 @@ async def _check_url_health(url: str) -> bool:
         if HF_TOKEN and "hf.space" in url:
             headers["Authorization"] = f"Bearer {HF_TOKEN}"
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{url}/api/v1/tasks", headers=headers, timeout=10.0)
+            response = await client.get(f"{url}/openapi.json", headers=headers, timeout=10.0)
             return response.status_code == 200
     except Exception:
         return False
@@ -670,10 +670,42 @@ async def _calc_max_steps(domain: str, default: int, memory: dict = None, stats:
     return result
 
 
+def build_task_prompt(navigation_goal: str, data_extraction_goal: str = None,
+                       complete_criterion: str = None, terminate_criterion: str = None,
+                       navigation_payload: dict = None) -> str:
+    """Merge the old Skyvern v1 task fields (navigation_goal, data_extraction_goal,
+    complete_criterion, terminate_criterion, navigation_payload) into the single
+    free-text `prompt` field required by the new Skyvern Task Run API
+    (POST /v1/run/tasks — see TaskRunRequest, whose only required field is `prompt`).
+
+    No instruction content is dropped or summarized — every old field that had text
+    is appended as its own clearly labeled paragraph so the agent still receives the
+    exact same instructions, just consolidated into one string. `navigation_payload`
+    (candidate/profile data referenced by name inside several site-specific
+    navigation_goal templates, e.g. "Use 'cover_letter' from navigation_payload") is
+    serialized as JSON and appended last, under a heading that still says
+    "navigation_payload" so those in-text references keep resolving correctly.
+    """
+    parts = [navigation_goal.strip()]
+    if data_extraction_goal:
+        parts.append(f"DATA TO EXTRACT / DETERMINE:\n{data_extraction_goal}")
+    if complete_criterion:
+        parts.append(f"TASK IS COMPLETE WHEN:\n{complete_criterion}")
+    if terminate_criterion:
+        parts.append(f"TERMINATE THE TASK IF:\n{terminate_criterion}")
+    if navigation_payload:
+        parts.append(
+            "navigation_payload (reference data for the fields above — use these "
+            "exact values whenever the instructions above refer to \"navigation_payload\" "
+            "or \"payload\"):\n" + json.dumps(navigation_payload, ensure_ascii=False, default=str)
+        )
+    return "\n\n".join(parts)
+
+
 async def submit_skyvern_task_with_retry(payload: dict, description: str = "task") -> Optional[str]:
     """Submit a task to Skyvern with retry and exponential backoff.
 
-    Returns task_id on success, None on failure.
+    Returns run_id on success, None on failure.
     """
     headers = skyvern_headers()
 
@@ -688,7 +720,7 @@ async def submit_skyvern_task_with_retry(payload: dict, description: str = "task
             async with httpx.AsyncClient() as client:
                 await log(f"🚀 Sending {description} to Skyvern (attempt {attempt + 1}/{RETRY_ATTEMPTS})...")
                 response = await client.post(
-                    f"{SKYVERN_URL}/api/v1/tasks",
+                    f"{SKYVERN_URL}/v1/run/tasks",
                     json=payload,
                     headers=headers,
                     timeout=30.0
@@ -696,9 +728,9 @@ async def submit_skyvern_task_with_retry(payload: dict, description: str = "task
 
                 if response.status_code == 200:
                     task_data = response.json()
-                    task_id = task_data.get('task_id')
-                    await log(f"✅ Skyvern Task Started! ID: {task_id}")
-                    return task_id
+                    run_id = task_data.get('run_id')
+                    await log(f"✅ Skyvern Task Started! ID: {run_id}")
+                    return run_id
                 else:
                     await log(f"❌ Skyvern API Error (attempt {attempt + 1}): {response.text}")
 
@@ -1806,16 +1838,19 @@ IMPORTANT: Extract ALL fields you can see, including:
 - Custom questions (Hvor fikk du høre om stillingen, etc.)
 """
 
+    prompt = build_task_prompt(
+        navigation_goal,
+        data_extraction_goal="Extract ALL form fields with their labels, types, required status, and options. This is for analysis - do not fill anything.",
+        complete_criterion="All visible form fields on the page have been identified and extracted. The page is fully loaded.",
+        terminate_criterion="The page requires login that cannot be completed, or shows a 404/error page. Do NOT terminate because the landing page is not a form - explore the site first via career/jobs links.",
+    )
+
     payload = {
         "url": url,
-        "navigation_goal": navigation_goal,
-        "data_extraction_goal": "Extract ALL form fields with their labels, types, required status, and options. This is for analysis - do not fill anything.",
+        "prompt": prompt,
         "data_extraction_schema": data_extraction_schema,
-        "max_steps_per_run": 10,  # Navigation + extraction only (keep low to save resources)
-        "complete_criterion": "All visible form fields on the page have been identified and extracted. The page is fully loaded.",
-        "terminate_criterion": "The page requires login that cannot be completed, or shows a 404/error page. Do NOT terminate because the landing page is not a form - explore the site first via career/jobs links.",
+        "max_steps": 10,  # Navigation + extraction only (keep low to save resources)
         "proxy_location": "RESIDENTIAL_DE",
-        "wait_before_action_ms": 1000
     }
 
     headers = skyvern_headers()
@@ -1824,7 +1859,7 @@ IMPORTANT: Extract ALL fields you can see, including:
         try:
             await log("🚀 Sending extraction task to Skyvern...")
             response = await client.post(
-                f"{SKYVERN_URL}/api/v1/tasks",
+                f"{SKYVERN_URL}/v1/run/tasks",
                 json=payload,
                 headers=headers,
                 timeout=30.0
@@ -1835,11 +1870,11 @@ IMPORTANT: Extract ALL fields you can see, including:
                 return {"success": False, "error": f"HTTP {response.status_code}", "fields": []}
 
             task_data = response.json()
-            task_id = task_data.get('task_id')
-            await log(f"📋 Extraction task created: {task_id}")
+            run_id = task_data.get('run_id')
+            await log(f"📋 Extraction task created: {run_id}")
 
             # Wait for task completion
-            result = await wait_for_extraction_task(task_id, max_wait=120)
+            result = await wait_for_extraction_task(run_id, max_wait=120)
             return result
 
         except Exception as e:
@@ -1847,7 +1882,7 @@ IMPORTANT: Extract ALL fields you can see, including:
             return {"success": False, "error": str(e), "fields": []}
 
 
-async def wait_for_extraction_task(task_id: str, max_wait: int = 300) -> dict:
+async def wait_for_extraction_task(run_id: str, max_wait: int = 300) -> dict:
     """Wait for extraction task to complete and return results."""
     headers = skyvern_headers()
 
@@ -1858,30 +1893,25 @@ async def wait_for_extraction_task(task_id: str, max_wait: int = 300) -> dict:
             elapsed = (datetime.now() - start_time).total_seconds()
             if elapsed > max_wait:
                 await log(f"⏰ Extraction task timeout after {max_wait}s")
-                await cancel_skyvern_task(task_id)
+                await cancel_skyvern_task(run_id)
                 return {"success": False, "error": "timeout", "fields": []}
 
             try:
                 response = await client.get(
-                    f"{SKYVERN_URL}/api/v1/tasks/{task_id}",
+                    f"{SKYVERN_URL}/v1/runs/{run_id}",
                     headers=headers,
                     timeout=10.0
                 )
 
                 if response.status_code == 200:
-                    raw = response.json()
-                    # Skyvern may return dict or wrapped response
-                    if isinstance(raw, list):
-                        data = raw[0] if raw else {}
-                    elif isinstance(raw, dict) and 'request' in raw:
-                        data = raw
-                    else:
-                        data = raw if isinstance(raw, dict) else {}
+                    data = response.json()
+                    if not isinstance(data, dict):
+                        data = {}
 
                     status = data.get('status', '')
 
                     if status == 'completed':
-                        extracted = data.get('extracted_information') or {}
+                        extracted = data.get('output') or {}
                         if isinstance(extracted, list):
                             extracted = extracted[0] if extracted else {}
                         await log(f"✅ Extraction completed!")
@@ -3408,20 +3438,30 @@ async def trigger_skyvern_task_with_credentials(
         }
     }
 
+    data_extraction_goal = "Determine: 1) Was application submitted? 2) Was login successful? 3) Does site use MAGIC LINK login (sends email link instead of password)? Look for messages like 'check your email', 'Kontroller e-posten', 'login link sent'."
+    complete_criterion = "The page shows a confirmation that the application was submitted successfully. Look for text like: 'Søknaden er sendt', 'Takk for din søknad', 'Application submitted', 'Din søknad er mottatt', 'Your application has been received', or a clear success/confirmation page after clicking submit."
+    terminate_criterion = "STOP if: (1) The position is closed or expired ('Stillingen er ikke lenger tilgjengelig', 'Fristen har gått ut', 'Deadline expired'), OR (2) A CAPTCHA appears that cannot be solved, OR (3) The page shows a 404/500 error or error message with no form/buttons to continue, OR (4) Login has failed (wrong password, error page, no form visible after login attempt), OR (5) The page is stuck on an error state with no actionable elements."
+
+    prompt = build_task_prompt(
+        navigation_goal,
+        data_extraction_goal=data_extraction_goal,
+        complete_criterion=complete_criterion,
+        terminate_criterion=terminate_criterion,
+        navigation_payload=candidate_payload,
+    )
+
+    # NOTE: wait_before_action_ms and max_retries_per_step (old Skyvern v1 per-step
+    # tuning knobs) have no equivalent field in the new TaskRunRequest schema — the
+    # skyvern-2.0 engine no longer exposes this granularity via the API, so they are
+    # dropped rather than silently ignored.
     payload = {
         "url": job_url,
-        "webhook_callback_url": None,
-        "navigation_goal": navigation_goal,
-        "navigation_payload": candidate_payload,
-        "data_extraction_goal": "Determine: 1) Was application submitted? 2) Was login successful? 3) Does site use MAGIC LINK login (sends email link instead of password)? Look for messages like 'check your email', 'Kontroller e-posten', 'login link sent'.",
+        "webhook_url": None,
+        "prompt": prompt,
         "data_extraction_schema": data_extraction_schema,
-        "max_steps_per_run": await _calc_max_steps(domain, 40 if credentials else 30, form_memory, domain_stats),
-        "complete_criterion": "The page shows a confirmation that the application was submitted successfully. Look for text like: 'Søknaden er sendt', 'Takk for din søknad', 'Application submitted', 'Din søknad er mottatt', 'Your application has been received', or a clear success/confirmation page after clicking submit.",
-        "terminate_criterion": "STOP if: (1) The position is closed or expired ('Stillingen er ikke lenger tilgjengelig', 'Fristen har gått ut', 'Deadline expired'), OR (2) A CAPTCHA appears that cannot be solved, OR (3) The page shows a 404/500 error or error message with no form/buttons to continue, OR (4) Login has failed (wrong password, error page, no form visible after login attempt), OR (5) The page is stuck on an error state with no actionable elements.",
+        "max_steps": await _calc_max_steps(domain, 40 if credentials else 30, form_memory, domain_stats),
         "error_code_mapping": SKYVERN_ERROR_CODES,
         "proxy_location": "RESIDENTIAL_DE",
-        "wait_before_action_ms": 1500,
-        "max_retries_per_step": 5,
         "extra_http_headers": {"Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8,en;q=0.5"}
     }
 
@@ -3518,81 +3558,35 @@ async def send_telegram_photo_file(chat_id: str, file_path: str, caption: str = 
         return None
 
 
-# Skyvern artifacts are stored in Docker volume mapped to host
 async def fetch_task_screenshot(client, task_id: str, headers: dict, prefer_type: str = "screenshot_final") -> Optional[str]:
-    """Fetch the latest screenshot from Skyvern task artifacts.
+    """Fetch the latest screenshot for a Skyvern run.
 
-    Gets artifact URI from API, then tries to download via static file serving.
-    Falls back to local filesystem path for when worker runs on same machine as Docker.
-    Returns path to downloaded PNG or None.
+    The new Task Run API returns `screenshot_urls` directly on the run object
+    (reverse chronological — index 0 is the latest/final screenshot), so no
+    separate steps/artifacts walk is needed anymore. Downloads it to a temp
+    file since callers (send_tech_telegram_photo_file) expect a local path.
     """
     try:
-        steps = await fetch_task_steps(client, task_id, headers)
-        if not steps:
+        response = await client.get(
+            f"{SKYVERN_URL}/v1/runs/{task_id}",
+            headers=headers,
+            timeout=10.0
+        )
+        if response.status_code != 200:
             return None
 
-        for step in reversed(steps):
-            step_id = step.get("step_id")
-            if not step_id:
-                continue
-
-            response = await client.get(
-                f"{SKYVERN_URL}/api/v1/tasks/{task_id}/steps/{step_id}/artifacts",
-                headers=headers,
-                timeout=10.0
-            )
-            if response.status_code != 200:
-                continue
-
-            artifacts = response.json()
-            if not isinstance(artifacts, list):
-                continue
-
-            screenshots = [a for a in artifacts if 'screenshot' in a.get('artifact_type', '')]
-            if not screenshots:
-                continue
-
-            type_priority = {'screenshot_final': 0, 'screenshot_action': 1, 'screenshot_llm': 2}
-            if prefer_type in type_priority:
-                screenshots.sort(key=lambda a: type_priority.get(a.get('artifact_type', ''), 99))
-
-            preferred = [s for s in screenshots if s.get('artifact_type') == prefer_type]
-            chosen = preferred[-1] if preferred else screenshots[-1]
-            uri = chosen.get('uri', '')
-
-            if not uri:
-                continue
-
-            # URI format: file:///data/artifacts/org_id/task_id/step_folder/filename.png
-            # Download via artifacts file server (skyvern-files.vitalii.no)
-            if uri.startswith('file:///data/artifacts/'):
-                rel_path = uri.replace('file:///data/artifacts/', '')
-
-                # Method 1: Download via dedicated artifacts file server
-                artifacts_base = os.getenv('SKYVERN_ARTIFACTS_URL', 'https://skyvern-files.vitalii.no')
-                try:
-                    from urllib.parse import quote
-                    # URL-encode path segments but keep slashes
-                    encoded_path = '/'.join(quote(seg) for seg in rel_path.split('/'))
-                    dl_resp = await client.get(
-                        f"{artifacts_base}/{encoded_path}",
-                        timeout=15.0
-                    )
-                    if dl_resp.status_code == 200 and len(dl_resp.content) > 1000:
-                        tmp_path = f"/tmp/skyvern_screenshot_{task_id}.png"
-                        with open(tmp_path, 'wb') as f:
-                            f.write(dl_resp.content)
-                        return tmp_path
-                except Exception as e:
-                    await log(f"⚠️ Artifacts download error: {e}")
-
-                # Method 2: Direct filesystem (worker on same machine as Docker)
-                for base in [os.path.expanduser("~/skyvern/artifacts"), "/home/stuar/skyvern/artifacts"]:
-                    host_path = os.path.join(base, rel_path)
-                    if os.path.exists(host_path):
-                        return host_path
-
+        data = response.json()
+        screenshot_urls = data.get("screenshot_urls") or []
+        if not screenshot_urls:
             return None
+
+        uri = screenshot_urls[0]
+        dl_resp = await client.get(uri, timeout=15.0)
+        if dl_resp.status_code == 200 and len(dl_resp.content) > 1000:
+            tmp_path = f"/tmp/skyvern_screenshot_{task_id}.png"
+            with open(tmp_path, 'wb') as f:
+                f.write(dl_resp.content)
+            return tmp_path
         return None
     except Exception as e:
         await log(f"⚠️ Could not fetch screenshot: {e}")
@@ -4154,66 +4148,62 @@ PHASE 3: SUBMIT
         }
     }
 
-    payload = {
-        "url": apply_url,  # Direct apply URL: finn.no/job/apply?adId={finnkode}
-        "navigation_goal": navigation_goal,
-        "data_extraction_goal": "Determine if application was submitted.",
-        "data_extraction_schema": data_extraction_schema,
-        "navigation_payload": {
+    prompt = build_task_prompt(
+        navigation_goal,
+        data_extraction_goal="Determine if application was submitted.",
+        complete_criterion="The page shows 'Søknaden er sendt', 'Takk for din søknad', or a confirmation message that the FINN application was submitted.",
+        terminate_criterion="STOP if: (1) Verification code is not provided within timeout, OR (2) The page shows 'Stillingen er ikke lenger tilgjengelig' or 'Annonsen er utløpt', OR (3) A CAPTCHA blocks progress and cannot be checked.",
+        navigation_payload={
             "email": FINN_EMAIL,
             "name": contact_name,
             "phone": contact_phone,
             "cover_letter": cover_letter
         },
-        "totp_verification_url": totp_webhook_url,
+    )
+
+    # NOTE: totp_timeout_seconds (old API) and wait_before_action_ms have no
+    # equivalent field in the new TaskRunRequest schema. totp_url replaces
+    # totp_verification_url — Skyvern polls that URL for the code itself
+    # (see finn-2fa-webhook, which already returns immediately with the code
+    # if available or `{}` otherwise, matching this polling model), so dropping
+    # the explicit timeout should be safe.
+    payload = {
+        "url": apply_url,  # Direct apply URL: finn.no/job/apply?adId={finnkode}
+        "prompt": prompt,
+        "data_extraction_schema": data_extraction_schema,
+        "totp_url": totp_webhook_url,
         "totp_identifier": FINN_EMAIL,
-        "totp_timeout_seconds": 180,  # 3 minutes to enter 2FA code
-        "max_steps_per_run": 35,
-        "complete_criterion": "The page shows 'Søknaden er sendt', 'Takk for din søknad', or a confirmation message that the FINN application was submitted.",
-        "terminate_criterion": "STOP if: (1) Verification code is not provided within timeout, OR (2) The page shows 'Stillingen er ikke lenger tilgjengelig' or 'Annonsen er utløpt', OR (3) A CAPTCHA blocks progress and cannot be checked.",
+        "max_steps": 35,
         "error_code_mapping": FINN_ERROR_CODES,
-        "wait_before_action_ms": 2000,  # Wait 2 seconds before each action for page to load
         "proxy_location": "RESIDENTIAL_NL"  # Netherlands — closest to Norway, NONE fails on HF Space (US IP → reCAPTCHA)
     }
 
     return await submit_skyvern_task_with_retry(payload, f"FINN task ({apply_url})")
 
 
-async def cancel_skyvern_task(task_id: str) -> bool:
-    """Cancel a running Skyvern task.
+async def cancel_skyvern_task(run_id: str) -> bool:
+    """Cancel a running Skyvern task run.
 
     Args:
-        task_id: The Skyvern task ID to cancel
+        run_id: The Skyvern run ID to cancel
 
     Returns:
         True if cancelled successfully, False otherwise
     """
-    await log(f"🛑 Cancelling Skyvern task {task_id}...")
+    await log(f"🛑 Cancelling Skyvern task {run_id}...")
 
     headers = skyvern_headers()
 
     async with httpx.AsyncClient() as client:
         try:
-            # Try POST /cancel endpoint first
             response = await client.post(
-                f"{SKYVERN_URL}/api/v1/tasks/{task_id}/cancel",
+                f"{SKYVERN_URL}/v1/runs/{run_id}/cancel",
                 headers=headers,
                 timeout=10.0
             )
 
             if response.status_code in [200, 204]:
-                await log(f"✅ Task {task_id} cancelled successfully")
-                return True
-
-            # If POST doesn't work, try DELETE
-            response = await client.delete(
-                f"{SKYVERN_URL}/api/v1/tasks/{task_id}",
-                headers=headers,
-                timeout=10.0
-            )
-
-            if response.status_code in [200, 204]:
-                await log(f"✅ Task {task_id} deleted/cancelled successfully")
+                await log(f"✅ Task {run_id} cancelled successfully")
                 return True
 
             await log(f"⚠️ Failed to cancel task: {response.status_code} - {response.text}")
@@ -4225,21 +4215,14 @@ async def cancel_skyvern_task(task_id: str) -> bool:
 
 
 async def fetch_task_steps(client, task_id: str, headers: dict) -> list:
-    """Fetch steps from Skyvern task steps API."""
-    try:
-        response = await client.get(
-            f"{SKYVERN_URL}/api/v1/tasks/{task_id}/steps",
-            headers=headers,
-            timeout=10.0
-        )
-        if response.status_code == 200:
-            data = response.json()
-            if isinstance(data, list):
-                return data
-        return []
-    except Exception as e:
-        await log(f"⚠️ Could not fetch steps: {e}")
-        return []
+    """Skyvern's new Task Run API (v1) no longer exposes structured per-step
+    action data (element ids, action types, fill results) — only file artifacts
+    (screenshots, HTML, logs) via /v1/runs/{run_id}/artifacts. Callers of this
+    function (extract_memory_from_task, monitor_task_status detailed reporting)
+    degrade gracefully on an empty list, so this is kept as a no-op stub rather
+    than removed, to avoid touching every call site.
+    """
+    return []
 
 
 def format_step_report(step: dict, step_num: int, total: int) -> str:
@@ -4381,7 +4364,7 @@ async def monitor_task_status(task_id, chat_id: str = None, job_title: str = Non
 
             try:
                 response = await client.get(
-                    f"{SKYVERN_URL}/api/v1/tasks/{task_id}",
+                    f"{SKYVERN_URL}/v1/runs/{task_id}",
                     headers=headers,
                     timeout=10.0
                 )
@@ -4389,7 +4372,9 @@ async def monitor_task_status(task_id, chat_id: str = None, job_title: str = Non
                 if response.status_code == 200:
                     data = response.json()
                     status = data.get('status')
-                    extracted_data = data.get('extracted_information', {}) or {}
+                    extracted_data = data.get('output', {}) or {}
+                    if not isinstance(extracted_data, dict):
+                        extracted_data = {}
 
                     # Check for magic link detection
                     if extracted_data.get('magic_link_sent'):
@@ -4741,17 +4726,20 @@ async def extract_linkedin_apply_url(job_url: str, email: str, password: str) ->
 
 IMPORTANT: Do NOT fill any forms. Only extract the external application URL.
 """
+        prompt = build_task_prompt(
+            navigation_goal,
+            data_extraction_goal="Extract the external application URL that the Apply button redirects to. If it's LinkedIn Easy Apply (no external redirect), return empty.",
+        )
         payload = {
             "url": job_url,
-            "navigation_goal": navigation_goal,
-            "data_extraction_goal": "Extract the external application URL that the Apply button redirects to. If it's LinkedIn Easy Apply (no external redirect), return empty.",
-            "max_steps_per_run": 10,
+            "prompt": prompt,
+            "max_steps": 10,
         }
 
         headers = skyvern_headers()
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                f"{SKYVERN_URL}/api/v1/tasks",
+                f"{SKYVERN_URL}/v1/run/tasks",
                 json=payload,
                 headers=headers,
                 timeout=30.0
@@ -4761,17 +4749,17 @@ IMPORTANT: Do NOT fill any forms. Only extract the external application URL.
                 return None
 
             task_data = resp.json()
-            task_id = task_data.get("task_id")
-            if not task_id:
+            run_id = task_data.get("run_id")
+            if not run_id:
                 return None
 
-            await log(f"🔗 LinkedIn extraction task: {task_id}")
+            await log(f"🔗 LinkedIn extraction task: {run_id}")
 
             # Poll for completion (max 3 min)
             for _ in range(36):
                 await asyncio.sleep(5)
                 status_resp = await client.get(
-                    f"{SKYVERN_URL}/api/v1/tasks/{task_id}",
+                    f"{SKYVERN_URL}/v1/runs/{run_id}",
                     headers=headers,
                     timeout=10.0
                 )
@@ -4782,28 +4770,13 @@ IMPORTANT: Do NOT fill any forms. Only extract the external application URL.
 
                 if status == "completed":
                     # Extract URL from extracted data
-                    extracted = task.get("extracted_information") or {}
+                    extracted = task.get("output") or {}
                     if isinstance(extracted, dict):
                         ext_url = extracted.get("url") or extracted.get("external_url") or extracted.get("apply_url") or ""
                     elif isinstance(extracted, str):
                         ext_url = extracted
                     else:
                         ext_url = ""
-
-                    # Also check navigation URL (where Skyvern ended up)
-                    if not ext_url:
-                        steps_resp = await client.get(
-                            f"{SKYVERN_URL}/api/v1/tasks/{task_id}/steps",
-                            headers=headers,
-                            timeout=10.0
-                        )
-                        if steps_resp.status_code == 200:
-                            steps = steps_resp.json()
-                            if steps:
-                                last_step = steps[-1]
-                                nav_url = last_step.get("output", {}).get("url", "") if isinstance(last_step.get("output"), dict) else ""
-                                if nav_url and "linkedin.com" not in nav_url:
-                                    ext_url = nav_url
 
                     if ext_url and "linkedin.com" not in ext_url:
                         return ext_url
@@ -5809,59 +5782,74 @@ async def print_startup_summary():
 
 
 async def cleanup_stale_skyvern_tasks():
-    """Cancel old running Skyvern tasks and clean up finished ones.
+    """Cancel old running Skyvern runs and clean up finished ones.
 
     Prevents queue blockage and browser instance accumulation that
     causes Skyvern Docker to run out of resources (CPU/RAM).
+
+    The new Task Run API has no list-all-runs endpoint, so instead of asking
+    Skyvern to enumerate its tasks, we check the run_ids we ourselves stored
+    in applications.skyvern_metadata for any application still marked
+    'sending' or 'manual_review', one by one via GET /v1/runs/{run_id}.
     """
     try:
+        headers = skyvern_headers()
+
+        rows = supabase.table("applications") \
+            .select("id, skyvern_metadata") \
+            .in_("status", ["sending", "manual_review"]) \
+            .execute()
+
+        run_ids = []
+        for row in (rows.data or []):
+            meta = row.get("skyvern_metadata") or {}
+            rid = meta.get("task_id")
+            if rid:
+                run_ids.append(rid)
+
+        if not run_ids:
+            return
+
+        now = datetime.now(timezone.utc)
+        stale_count = 0
+        running_count = 0
+
         async with httpx.AsyncClient() as client:
-            headers = skyvern_headers()
-
-            # 1. Cancel running tasks older than 30 minutes (stuck)
-            resp = await client.get(
-                f"{SKYVERN_URL}/api/v1/tasks?page=1&page_size=50",
-                headers=headers, timeout=10.0
-            )
-            if resp.status_code != 200:
-                return
-
-            tasks = resp.json()
-            if not isinstance(tasks, list) or len(tasks) == 0:
-                return
-
-            now = datetime.now(timezone.utc)
-            stale_count = 0
-            running_count = 0
-
-            for task in tasks:
-                status = task.get('status', '')
-                created = task.get('created_at', '')
-                tid = task.get('task_id', '')
-                if not created or not tid:
-                    continue
-
-                if status == 'running':
-                    running_count += 1
-
+            for rid in run_ids:
                 try:
+                    resp = await client.get(
+                        f"{SKYVERN_URL}/v1/runs/{rid}",
+                        headers=headers, timeout=10.0
+                    )
+                    if resp.status_code != 200:
+                        continue
+
+                    run = resp.json()
+                    status = run.get('status', '')
+                    created = run.get('created_at', '')
+                    if not created:
+                        continue
+
+                    if status == 'running':
+                        running_count += 1
+
                     task_time = datetime.fromisoformat(created.replace('Z', '+00:00'))
                     age_minutes = (now - task_time).total_seconds() / 60
 
                     # Cancel running tasks older than 30 min
                     if status == 'running' and age_minutes > 30:
                         await client.post(
-                            f"{SKYVERN_URL}/api/v1/tasks/{tid}/cancel",
+                            f"{SKYVERN_URL}/v1/runs/{rid}/cancel",
                             headers=headers, timeout=10.0
                         )
                         stale_count += 1
                 except Exception:
-                    pass
+                    continue
 
-            if stale_count > 0:
-                await log(f"🧹 Cleaned up {stale_count} stale Skyvern tasks (>30min old)")
-            elif running_count > 0:
-                await log(f"📋 Skyvern: {running_count} running task(s), all fresh")
+        if stale_count > 0:
+            await log(f"🧹 Cleaned up {stale_count} stale Skyvern tasks (>30min old)")
+        elif running_count > 0:
+            await log(f"📋 Skyvern: {running_count} running task(s), all fresh")
     except Exception as e:
         await log(f"⚠️ Skyvern task cleanup error: {e}")
 
