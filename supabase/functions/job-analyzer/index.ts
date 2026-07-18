@@ -38,11 +38,30 @@ CANDIDATE EVALUATION RULES (CRITICAL):
 - Education and certifications from any period are always relevant.
 - Transferable skills (leadership, communication, planning, budgeting) apply across fields.
 
+HARD REQUIREMENT GATE (CRITICAL — check this FIRST, before scoring):
+- Determine if the job requires a specific licensed/vocational/formal qualification
+  (e.g. culinary chef training, licensed mechanic/electrician/welder, professional
+  engineering degree, healthcare license, specific certified trade).
+- If such a requirement exists AND the candidate's profile shows NO matching education,
+  license, or hands-on trade experience — this is a HARD BLOCKER:
+  - Score MUST NOT exceed 35, regardless of leadership/soft-skill/business experience.
+  - Prefix the cons section with "🚫 Блокуюча вимога: [конкретна вимога]" (or the
+    equivalent in the target language).
+- Distinguish this from ordinary industry-adjacent gaps (e.g. general retail experience
+  vs. this specific chain), which should score normally based on transferable overlap —
+  the gate is ONLY for genuine licensed/vocational trade mismatches.
+- Do NOT invent generic filler pros (e.g. "experience with various clients/technologies/
+  products") to fill the pros section when genuine overlap is weak or absent. Writing
+  0-1 pro bullets, or a single line like "Немає прямого релевантного досвіду, окрім
+  загальних управлінських навичок", is CORRECT and preferred over padding with
+  unrelated buzzwords pulled from the candidate's general summary.
+
 SCORING GUIDELINES:
-- 70-100: Strong match — candidate has direct experience or education in this field
-- 50-69: Moderate match — candidate has transferable skills or partial experience
-- 30-49: Weak match — some overlap but significant gaps
-- 0-29: Poor match — very little relevant experience
+- Apply the HARD REQUIREMENT GATE above first. If it triggers, cap the score at 35 max.
+- 70-100: Strong match — candidate has direct experience or education in this field, and no gate triggered
+- 50-69: Moderate match — candidate has transferable skills or partial experience, no hard blocker
+- 30-49: Weak match — some overlap but significant gaps, OR a gated job where candidate has adjacent (not exact) experience
+- 0-29: Poor match — very little relevant experience, or gate triggered with zero adjacency
 
 ANALYSIS FORMAT (CRITICAL):
 The "analysis" field MUST use this EXACT structure — cons FIRST, then pros:
@@ -54,7 +73,9 @@ The "analysis" field MUST use this EXACT structure — cons FIRST, then pros:
 - [specific pro about candidate fit]
 - [another pro]
 
-Write 2-5 bullet points for each section. Always include BOTH sections even if one side is weak.
+Write 2-5 bullet points for the cons section. For pros, write ONLY as many bullets as are
+genuinely justified by real profile overlap (0-5) — never pad with generic filler just to
+fill space.
 When listing pros, explicitly reference the SPECIFIC role/period from the candidate's history that is relevant.
 If the target language is Norwegian, use "❌ Ulemper:" and "✅ Fordeler:".
 If the target language is English, use "❌ Cons:" and "✅ Pros:".
@@ -97,6 +118,31 @@ const LANG_MAP: any = {
     'no': 'Norwegian (Bokmål)',
     'en': 'English'
 };
+
+// Deterministic safety net: the LLM sometimes ignores the HARD REQUIREMENT GATE prompt
+// instruction (temperature=0.3, no cross-field consistency guarantee between "score" and
+// "requirements"). Keyword-match on title + the ❌ (unmet) requirements text and force-cap
+// the score, independent of what the model decided.
+const VOCATIONAL_GATE_KEYWORDS = [
+  'kokk', 'kjøkkensjef', 'kokkefaget',
+  'mekaniker', 'bilmekaniker',
+  'elektriker', 'elektrofag',
+  'snekker', 'tømrer', 'rørlegger', 'sveiser',
+  'sivilingeniør', 'ingeniør', 'ingeniørfag',
+  'frisør', 'tannlege', 'sykepleier', 'jordmor',
+  'advokat', 'revisor', 'lege',
+];
+
+function applyHardRequirementGate(score: number, title: string, requirementsText: string): number {
+  if (!requirementsText) return score;
+  const haystack = `${title} ${requirementsText}`.toLowerCase();
+  const hasVocationalKeyword = VOCATIONAL_GATE_KEYWORDS.some((kw) => haystack.includes(kw));
+  const hasUnmetMarker = requirementsText.includes('❌');
+  if (hasVocationalKeyword && hasUnmetMarker) {
+    return Math.min(score, 35);
+  }
+  return score;
+}
 
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
@@ -301,10 +347,12 @@ CRITICAL: Your response MUST be valid JSON with this EXACT structure:
             radar: radar
         };
 
+        const gatedScore = applyHardRequirementGate(content.score, job.title, content.requirements || '');
+
         await supabase
           .from('jobs')
           .update({
-            relevance_score: content.score,
+            relevance_score: gatedScore,
             ai_recommendation: content.analysis,
             tasks_summary: content.tasks,
             analysis_metadata: metadata, // NEW COLUMN
