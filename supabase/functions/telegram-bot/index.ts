@@ -15,6 +15,12 @@ console.log("🤖 [TelegramBot] v15.0 - /apply command for batch FINN Easy submi
 const BOT_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN');
 console.log(`🤖 [TelegramBot] BOT_TOKEN exists: ${!!BOT_TOKEN}`);
 
+// Old external-form path (Python worker + Skyvern). Kept intact as a fallback --
+// buttons no longer route here by default; the agent-driven Playwright pipeline
+// (submission_method='agent') owns new external-form submissions instead.
+// FINN Enkel Soknad is unaffected either way.
+const FALLBACK_TO_SKYVERN_WORKER = false;
+
 // --- HELPER: Format Application Form Type ---
 function formatFormType(job: any): string {
   const formType = job.application_form_type;
@@ -115,6 +121,53 @@ async function checkWorkerRunning(supabase: any, userId: string): Promise<{ isRu
     const oldestMinutes = Math.round((Date.now() - oldestTime) / 60000);
 
     return { isRunning: false, stuckCount: stuckApps.length, oldestMinutes };
+}
+
+// --- HELPER: Queue an application for the agent-driven Playwright pipeline ---
+// (external forms, non-FINN). Marks submission_method='agent' so the legacy
+// Python worker's claim_applications() skips it (see migration
+// 20260719132000_agent_pipeline_claim_exclusion.sql). A scheduled task polls
+// for status='sending' AND submission_method='agent' to wake the agent, which
+// then follows skills/form-filling to fill and submit via Playwright.
+async function queueForAgentPipeline(supabase: any, appId: string, userId: string, chatId: string) {
+    const { data: app } = await supabase
+        .from('applications')
+        .select('*, jobs(id, title, company, external_apply_url, job_url, application_form_type)')
+        .eq('id', appId)
+        .eq('user_id', userId)
+        .single();
+
+    if (!app || !app.jobs) {
+        await sendTelegram(chatId, "❌ Заявку не знайдено.");
+        return;
+    }
+
+    if (app.status === 'sent' || app.status === 'sending') {
+        await sendTelegram(chatId,
+            `⚠️ <b>Заявку вже відправлено!</b>\n\n` +
+            `📋 ${app.jobs.title}\n` +
+            `🏢 ${app.jobs.company}\n\n` +
+            `Повторна відправка заблокована.`
+        );
+        return;
+    }
+
+    const isLinkedIn = app.jobs.application_form_type === 'linkedin_easy_apply' ||
+                       (app.jobs.job_url || '').includes('linkedin.com');
+
+    await supabase.from('applications').update({
+        status: 'sending',
+        submission_method: 'agent'
+    }).eq('id', appId).eq('user_id', userId);
+
+    let infoMsg = `📋 <b>${app.jobs.title}</b>\n🏢 ${app.jobs.company}\n\n`;
+    if (isLinkedIn) {
+        infoMsg += `🔗 <b>LinkedIn-вакансія</b>\nСпробую знайти зовнішнє посилання "Apply on company website". ` +
+            `Якщо подача можлива тільки через LinkedIn Easy Apply (потрібен логін) — поставлю заявку на ручний розгляд і надішлю пряме посилання.\n\n`;
+    }
+    infoMsg += `⏳ Заявка в черзі на заповнення, повідомлю після відправки.`;
+
+    await sendTelegram(chatId, infoMsg);
 }
 
 // --- HELPER: Check if user is admin ---
@@ -737,19 +790,19 @@ async function runBackgroundJob(update: any) {
                         if (isFinnEasy) {
                             buttons.push({ text: "⚡ Подати на FINN", callback_data: `finn_apply_${app.id}` });
                         } else {
-                            buttons.push({ text: "🚀 Auto-Apply (Skyvern)", callback_data: `auto_apply_${app.id}` });
+                            buttons.push({ text: "🚀 Поставити в чергу", callback_data: `queue_agent_${app.id}` });
                         }
                     } else if (app.status === 'sending') {
                         statusText = "🚀 Sending...";
                         buttons.push({ text: "🛑 Зупинити", callback_data: `cancel_confirm_${app.id}` });
                     } else if (app.status === 'manual_review') {
-                        statusText = "⚠️ Check Task (Skyvern Done)";
-                        buttons.push({ text: "🔄 Retry", callback_data: isFinnEasy ? `finn_apply_${app.id}` : `auto_apply_${app.id}` });
+                        statusText = "⚠️ Потрібна перевірка";
+                        buttons.push({ text: "🔄 Retry", callback_data: isFinnEasy ? `finn_apply_${app.id}` : `queue_agent_${app.id}` });
                     } else if (app.status === 'sent') {
                         statusText = "📬 Sent to Employer";
                     } else if (app.status === 'failed') {
                         statusText = "❌ Failed to Send";
-                        buttons.push({ text: "🚀 Retry", callback_data: isFinnEasy ? `finn_apply_${app.id}` : `auto_apply_${app.id}` });
+                        buttons.push({ text: "🚀 Retry", callback_data: isFinnEasy ? `finn_apply_${app.id}` : `queue_agent_${app.id}` });
                     } else {
                         // Draft
                         statusText = "📝 Draft";
@@ -834,14 +887,14 @@ async function runBackgroundJob(update: any) {
                             { text: `⚡ Відправити в ${companyName}`, callback_data: `finn_apply_${appId}` }
                         ]]};
                     } else if (app?.jobs?.external_apply_url) {
-                        msg += `📝 Зовнішня форма:\n🔗 <a href="${app.jobs.external_apply_url}">Відкрити форму</a>\n\nАбо запустіть автозаповнення:`;
+                        msg += `📝 Зовнішня форма:\n🔗 <a href="${app.jobs.external_apply_url}">Відкрити форму</a>\n\nАбо поставте в чергу на автозаповнення:`;
                         kb = { inline_keyboard: [[
-                            { text: "🚀 Auto-Apply (Skyvern)", callback_data: `auto_apply_${appId}` }
+                            { text: "🚀 Поставити в чергу", callback_data: `queue_agent_${appId}` }
                         ]]};
                     } else {
-                        msg += "Бажаєте запустити автоматичну подачу через Skyvern?";
+                        msg += "Бажаєте поставити заявку в чергу на автоматичне заповнення?";
                         kb = { inline_keyboard: [[
-                            { text: "🚀 Запустити (Auto-Apply)", callback_data: `auto_apply_${appId}` }
+                            { text: "🚀 Поставити в чергу", callback_data: `queue_agent_${appId}` }
                         ]]};
                     }
 
@@ -852,8 +905,21 @@ async function runBackgroundJob(update: any) {
                 }
             }
 
-            // AUTO-APPLY (External forms via Skyvern)
+            // AUTO-APPLY (legacy external-form path: Python worker + Skyvern)
+            // Kept behind FALLBACK_TO_SKYVERN_WORKER. Default: redirect to the
+            // agent-driven pipeline so any stale button still routes correctly.
             if (data.startsWith('auto_apply_')) {
+                if (!FALLBACK_TO_SKYVERN_WORKER) {
+                    if (cbMessageId) await removeButtons(chatId, cbMessageId);
+                    const appId = data.split('auto_apply_')[1];
+                    const userId = await getUserIdFromChat(supabase, chatId);
+                    if (!userId) {
+                        await sendTelegram(chatId, "⚠️ Telegram не прив'язаний до акаунту. Використайте /link CODE");
+                        return;
+                    }
+                    await queueForAgentPipeline(supabase, appId, userId, chatId);
+                    return;
+                }
                 if (cbMessageId) await removeButtons(chatId, cbMessageId);
                 const appId = data.split('auto_apply_')[1];
                 const userId = await getUserIdFromChat(supabase, chatId);
@@ -931,7 +997,21 @@ async function runBackgroundJob(update: any) {
                 await sendTelegram(chatId, infoMsg);
             }
 
-            // CONFIRM APPLICATION (before Skyvern submission)
+            // QUEUE FOR AGENT PIPELINE (external forms, Playwright, non-FINN)
+            if (data.startsWith('queue_agent_')) {
+                if (cbMessageId) await removeButtons(chatId, cbMessageId);
+                const appId = data.split('queue_agent_')[1];
+                const userId = await getUserIdFromChat(supabase, chatId);
+
+                if (!userId) {
+                    await sendTelegram(chatId, "⚠️ Telegram не прив'язаний до акаунту. Використайте /link CODE");
+                    return;
+                }
+
+                await queueForAgentPipeline(supabase, appId, userId, chatId);
+            }
+
+            // CONFIRM APPLICATION (before automated submission)
             if (data.startsWith('confirm_apply_')) {
                 const confirmationId = data.split('confirm_apply_')[1];
                 console.log(`✅ [TG] Confirming application: ${confirmationId}`);
@@ -955,8 +1035,7 @@ async function runBackgroundJob(update: any) {
 
                     await sendTelegram(chatId,
                         `✅ <b>Підтверджено!</b>\n\n` +
-                        `⏳ Skyvern зараз заповнить та відправить форму.\n` +
-                        `Слідкуйте за повідомленнями...`
+                        `⏳ Заявка в черзі на заповнення, повідомлю після відправки.`
                     );
                 } catch (e: any) {
                     console.error('Confirm exception:', e);
@@ -1060,8 +1139,7 @@ async function runBackgroundJob(update: any) {
                     await sendTelegram(chatId,
                         `✅ <b>Підтверджено!</b>\n\n` +
                         `📋 Буде заповнено ${matchedCount} полів\n` +
-                        `⏳ Skyvern зараз заповнить форму...\n\n` +
-                        `Слідкуйте за повідомленнями...`
+                        `⏳ Заявка в черзі на заповнення, повідомлю після відправки.`
                     );
                 } catch (e: any) {
                     console.error('Smart confirm exception:', e);
@@ -1642,7 +1720,7 @@ async function runBackgroundJob(update: any) {
 
                     await sendTelegram(chatId,
                         `✅ <b>Підтверджено!</b>\n\n` +
-                        `⏳ Skyvern заповнює форму...`
+                        `⏳ Заявка в черзі на заповнення, повідомлю після відправки.`
                     );
                 } catch (e: any) {
                     console.error('Payload confirm error:', e);
@@ -2583,7 +2661,7 @@ async function runBackgroundJob(update: any) {
                     return;
                 }
 
-                await sendTelegram(chatId, `✅ Код <code>${code}</code> прийнято!\n\n⏳ Очікуйте, Skyvern обробляє...`);
+                await sendTelegram(chatId, `✅ Код <code>${code}</code> прийнято!\n\n⏳ Очікуйте, заявка обробляється...`);
                 return;
             }
 

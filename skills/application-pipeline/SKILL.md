@@ -143,6 +143,20 @@ pattern as the existing `formatFormType(job)` helper.
 verified or hit a blocker — see `skills/form-filling` gotchas) | `failed` |
 `rejected`.
 
+### Legacy worker vs. agent pipeline (added 2026-07-19)
+
+External-form (non-FINN) submissions are now owned by the agent-driven
+Playwright pipeline, not the legacy Python worker/Skyvern. The main bot's
+approve/retry buttons mark `applications.submission_method = 'agent'` when
+queuing (`queueForAgentPipeline` in `telegram-bot/index.ts`), and the legacy
+worker's `claim_applications()` RPC skips any row so marked — see
+`skills/form-filling`'s "Agent-wake contract" section for the full mechanism,
+and its "LinkedIn branch" section for how `linkedin_easy_apply` jobs are
+handled (no automated LinkedIn login, ever). FINN Enkel Søknad is unaffected —
+it still goes through the worker/Skyvern path regardless. The old path is
+fully intact behind `FALLBACK_TO_SKYVERN_WORKER` in `telegram-bot/index.ts`
+(`false` by default) as an emergency-only escape hatch.
+
 ## Employer blacklist
 
 Hard refusal list, checked (case-insensitive substring match on `company`)

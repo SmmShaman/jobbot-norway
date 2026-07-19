@@ -75,6 +75,51 @@ form, not tied to one site. Site-specific knowledge goes in `sites/*.json`.
 Employer blacklist and relevance-score thresholds are process policy, not
 form-filling mechanics — see `skills/application-pipeline/SKILL.md` for both.
 
+## Agent-wake contract (how the agent learns there's work to do)
+
+Since 2026-07-19, the Telegram bot's approve/retry buttons for non-FINN
+applications set `applications.status = 'sending'` AND
+`applications.submission_method = 'agent'` (see `queueForAgentPipeline` in
+`supabase/functions/telegram-bot/index.ts`). This flag is also what keeps the
+legacy Python worker (`worker/auto_apply.py`) from ever touching these rows —
+its `claim_applications()` RPC excludes `submission_method = 'agent'` (migration
+`20260719132000_agent_pipeline_claim_exclusion.sql`), so there is no race
+between the two pipelines.
+
+A `schedule_task` poller (script-gated, empty-queue-safe) checks for
+`applications` rows with `status = 'sending' AND submission_method = 'agent'`
+and wakes the agent when one exists. On wake: pick up the row, run phases 1-8
+above, and on success set `status = 'sent'` (or `manual_review` on any
+failure/gotcha per phase 8) — do not touch `submission_method` after that,
+it's a historical marker, not a live state field.
+
+The legacy Skyvern/worker path still exists and is reachable only if someone
+flips `FALLBACK_TO_SKYVERN_WORKER = true` in `telegram-bot/index.ts` — treat it
+as an emergency-only escape hatch, not a normal branch to maintain going
+forward. FINN Enkel Søknad is untouched by any of this; it still goes through
+the worker/Skyvern path unconditionally, regardless of the flag.
+
+## LinkedIn branch
+
+`linkedin_easy_apply` jobs are not supported by the legacy worker at all (the
+two applications that failed under it, TrendAI and Palo Alto Networks, were
+both LinkedIn). For the agent pipeline:
+
+1. **Never log into LinkedIn automatically.** An automated login is a distinct
+   risk (account ban) and is explicitly out of scope — a separate decision for
+   later, not something to sneak in as part of form-filling.
+2. On recon, check — as an anonymous/logged-out visitor — whether the job
+   posting exposes an external "Apply on company website" link. LinkedIn often
+   shows this even to visitors who aren't logged in; look for it before
+   assuming Easy Apply is the only path.
+3. If an external apply URL is found: treat it exactly like any other
+   external-form job from here on — proceed through the normal recon/fill
+   phases against that URL, not against linkedin.com.
+4. If the only apply path is Easy Apply *inside* LinkedIn (requires login): do
+   not attempt it. Set `applications.status = 'manual_review'`, make sure the
+   cover letter is already written and attached to the application, and
+   message the user with the direct job link so they can apply by hand.
+
 ## Registration flow via IMAP (planned architecture — not yet implemented)
 
 Some sites require a registered account before the application form is even
