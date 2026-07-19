@@ -14,7 +14,7 @@ import sys
 import json
 import asyncio
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 import httpx
@@ -216,6 +216,76 @@ def apply_hard_requirement_gate(score: int, title: str, requirements_text: str) 
     return score
 
 
+# Career-track scoring honesty calibration (added 2026-07-19): the LLM had been scoring
+# career-track roles optimistically on two specific real blockers — seniority (years of
+# PAID employment in the craft, not just self-taught/personal-project skill) and Norwegian
+# language level (Vitalii's documented level is B1, not flytende/morsmål). Same
+# prompt+deterministic-backstop pattern as the vocational HARD REQUIREMENT GATE above: the
+# prompt instructs the model to prefix the relevant cons bullet with an invariant "❗️"
+# marker (kept as-is across languages, only the words after it translate), and a
+# keyword+marker backstop re-caps the score if the model ignores the instruction. Only
+# applies to track == 'career' (see skills/application-pipeline).
+CAREER_SENIORITY_GATE_TITLES = [
+    'head of engineering', 'engineering manager', 'senior engineer', 'senior developer',
+    'senior software', 'principal engineer', 'principal architect', 'architect',
+    'lead engineer', 'lead developer', 'tech lead', 'chief technology officer',
+    'vp of engineering', 'head of it', 'it-sjef', 'it-direktør',
+]
+CAREER_LANGUAGE_GATE_KEYWORDS = [
+    'flytende norsk', 'morsmål', 'som morsmål', 'native norwegian', 'perfekt norsk',
+]
+
+CAREER_SENIORITY_GATE_PROMPT = """
+SENIORITY GATE (career track — check BEFORE finalizing the score):
+- This role demands many years of PROFESSIONAL (paid, employed) experience in a specific
+  craft (e.g. Head of Engineering, Senior/Principal Engineer, Architect, Engineering Manager).
+- If the candidate's profile shows this craft ONLY via self-taught skills or personal/hobby
+  projects, with NO paid employment history in that exact craft, this is a real seniority gap.
+- When that gap applies: score MUST NOT exceed 60, and the FIRST cons bullet must be exactly
+  "❗️ Немає професійного найму в цій ролі — навички самостійні" (translate the words after ❗️
+  to the target language, keep the ❗️ character itself).
+"""
+
+CAREER_LANGUAGE_GATE_PROMPT = """
+LANGUAGE GATE (career track — check BEFORE finalizing the score):
+- If the job posting explicitly requires native-level or fully fluent Norwegian (flytende
+  norsk, morsmål, native speaker), and the candidate's documented Norwegian level is B1 (NOT
+  fluent, NOT native) — this is a real language mismatch.
+- When that gap applies: score MUST NOT exceed 50, and the FIRST cons bullet must be exactly
+  "❗️ Вимагається вільна/рідна норвезька, у кандидата документований рівень B1" (translate the
+  words after ❗️ to the target language, keep the ❗️ character itself).
+- Do NOT apply this gate to English-language job postings.
+"""
+
+CAREER_CONS_ORDERING_PROMPT = """
+CONS ORDERING (career track): the FIRST bullet in the cons section overall must state the
+single biggest REAL obstacle to this specific candidate getting this specific role — language
+level, seniority/professional-hire gap, or a missing formal diploma/license — stated plainly,
+with no sugar-coating. If a SENIORITY GATE or LANGUAGE GATE marker applies, that marker IS the
+first bullet.
+"""
+
+
+def apply_seniority_gate(score: int, track: str, title: str, analysis_text: str) -> int:
+    """Deterministic backstop for the SENIORITY GATE prompt instruction (career track only)."""
+    if track != 'career' or not analysis_text:
+        return score
+    haystack_title = (title or '').lower()
+    if any(kw in haystack_title for kw in CAREER_SENIORITY_GATE_TITLES) and '❗️' in analysis_text:
+        return min(score, 60)
+    return score
+
+
+def apply_language_gate(score: int, track: str, title: str, description: str, analysis_text: str) -> int:
+    """Deterministic backstop for the LANGUAGE GATE prompt instruction (career track only)."""
+    if track != 'career' or not analysis_text:
+        return score
+    haystack = f"{title} {description or ''}".lower()
+    if any(kw in haystack for kw in CAREER_LANGUAGE_GATE_KEYWORDS) and '❗️' in analysis_text:
+        return min(score, 50)
+    return score
+
+
 # Search tracks: nav_quota (NAV activity-report jobs, "can I do this") vs
 # career (leadership/IT jobs, "fit with leadership experience + company potential").
 # LinkedIn jobs are always career. NAV/FINN jobs are career only if a leadership or
@@ -251,12 +321,18 @@ async def analyze_job(
     job: dict,
     profile: str,
     lang: str,
-    custom_prompt: Optional[str] = None
+    custom_prompt: Optional[str] = None,
+    track: str = 'nav_quota'
 ) -> dict:
     """Analyze a single job using Groq API"""
 
     lang_full = LANG_MAP.get(lang, 'Ukrainian')
     analysis_prompt = custom_prompt or DEFAULT_ANALYSIS_PROMPT
+    if track == 'career':
+        analysis_prompt = (
+            f"{analysis_prompt}\n{CAREER_SENIORITY_GATE_PROMPT}\n"
+            f"{CAREER_LANGUAGE_GATE_PROMPT}\n{CAREER_CONS_ORDERING_PROMPT}"
+        )
 
     user_message = f"""{analysis_prompt}
 
@@ -350,6 +426,12 @@ Location: {job.get('location', 'Unknown')}
 
                 gated_score = apply_hard_requirement_gate(
                     content.get('score', 0), job.get('title', ''), content.get('requirements', '')
+                )
+                gated_score = apply_seniority_gate(
+                    gated_score, track, job.get('title', ''), content.get('analysis', '')
+                )
+                gated_score = apply_language_gate(
+                    gated_score, track, job.get('title', ''), job.get('description', ''), content.get('analysis', '')
                 )
 
                 return {
@@ -686,10 +768,10 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
             filtered_count = 0
 
             for job in user_jobs:
-                result = await analyze_job(client, job, profile, lang, custom_prompt)
+                track = classify_track(job)
+                result = await analyze_job(client, job, profile, lang, custom_prompt, track=track)
 
                 if result['success']:
-                    track = classify_track(job)
                     policy = track_policies.get(track, track_policies['nav_quota'])
                     track_counts[track] = track_counts.get(track, 0) + 1
 
@@ -906,16 +988,89 @@ async def send_evening_digest():
                 print(f"⚠️ Evening digest send failed for user {uid[:8]}: {e}")
 
 
+async def reanalyze_career_recent(days: int = 3, user_id: Optional[str] = None):
+    """Re-run already-ANALYZED career-track jobs from the last N days through analyze_job with
+    the new seniority/language honesty gates (2026-07-19), so historical scores reflect the
+    current calibration. Updates jobs.relevance_score/ai_recommendation/analysis_metadata in
+    place — does not resend Telegram cards or touch application status."""
+    validate_config()
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+
+    query = supabase.table('jobs').select('*').eq('track', 'career').eq('status', 'ANALYZED').gte('analyzed_at', since)
+    if user_id:
+        query = query.eq('user_id', user_id)
+    jobs = query.execute().data or []
+
+    if not jobs:
+        print("✅ No career jobs to re-analyze")
+        return
+
+    jobs_by_user: dict = {}
+    for job in jobs:
+        jobs_by_user.setdefault(job.get('user_id'), []).append(job)
+
+    print(f"🔁 Re-analyzing {len(jobs)} career jobs from last {days} days for {len(jobs_by_user)} users")
+
+    async with httpx.AsyncClient() as client:
+        for uid, user_jobs in jobs_by_user.items():
+            if not uid:
+                continue
+            profile_resp = supabase.table('cv_profiles').select('content').eq('user_id', uid).eq('is_active', True).limit(1).execute()
+            if not profile_resp.data or not profile_resp.data[0].get('content'):
+                print(f"⚠️ No profile for user {uid[:8]}..., skipping {len(user_jobs)} jobs")
+                continue
+            profile = profile_resp.data[0]['content']
+
+            settings_resp = supabase.table('user_settings').select('preferred_analysis_language, job_analysis_prompt').eq('user_id', uid).limit(1).execute()
+            lang = 'uk'
+            custom_prompt = None
+            if settings_resp.data:
+                lang = settings_resp.data[0].get('preferred_analysis_language') or 'uk'
+                custom_prompt = settings_resp.data[0].get('job_analysis_prompt')
+
+            print(f"\n👤 User {uid[:8]}... | {len(user_jobs)} career jobs")
+
+            for job in user_jobs:
+                result = await analyze_job(client, job, profile, lang, custom_prompt, track='career')
+                if result['success']:
+                    old_score = job.get('relevance_score')
+                    supabase.table('jobs').update({
+                        'relevance_score': result['score'],
+                        'ai_recommendation': result['analysis'],
+                        'tasks_summary': result['tasks'],
+                        'analysis_metadata': {
+                            'aura': result['aura'],
+                            'radar': result['radar'],
+                            'requirements': result.get('requirements', ''),
+                            'offers': result.get('offers', ''),
+                            'position_uk': result.get('position_uk', '')
+                        },
+                        'cost_usd': (job.get('cost_usd') or 0) + result['cost'],
+                    }).eq('id', job['id']).execute()
+                    delta = result['score'] - (old_score or 0)
+                    arrow = "↓" if delta < 0 else "↑" if delta > 0 else "="
+                    print(f"   {arrow} {job['title'][:40]}: {old_score}% -> {result['score']}%")
+                else:
+                    print(f"   ❌ {job['title'][:40]} | Error: {result['error']}")
+                await asyncio.sleep(2.0)
+
+    print("✅ Re-analysis complete")
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Analyze jobs worker')
     parser.add_argument('--limit', type=int, default=100, help='Max jobs to analyze')
     parser.add_argument('--user', type=str, help='Specific user ID to process')
     parser.add_argument('--users', type=str, help='Comma-separated user IDs to process')
     parser.add_argument('--digest', action='store_true', help='Send evening digest broken down by track instead of analyzing')
+    parser.add_argument('--reanalyze-career-days', type=int, help='Re-analyze already-ANALYZED career jobs from the last N days with current calibration')
 
     args = parser.parse_args()
 
-    if args.digest:
+    if args.reanalyze_career_days is not None:
+        asyncio.run(reanalyze_career_recent(days=args.reanalyze_career_days, user_id=args.user))
+    elif args.digest:
         asyncio.run(send_evening_digest())
     elif args.users:
         # Run for each user separately

@@ -98,6 +98,35 @@ the `/automode` bot command — never edited by hand in the DB.
   See `TRACK_LEADERSHIP_KEYWORDS`/`TRACK_IT_KEYWORDS` for the exact lists.
 - Default: `nav_quota`.
 
+## Career-track scoring honesty calibration (added 2026-07-19)
+
+Applies only to `track == 'career'`. Same prompt+deterministic-backstop pattern as the
+vocational HARD REQUIREMENT GATE (`apply_hard_requirement_gate`): the prompt instructs the
+model, and a keyword+`❗️`-marker check in `analyze_worker.py` re-caps the score if the model
+ignores it.
+
+1. **Seniority gate** (`apply_seniority_gate`, `CAREER_SENIORITY_GATE_TITLES`) — if the role
+   demands years of PAID, employed experience in a specific craft (Head of Engineering,
+   Senior/Principal Engineer, Architect, Engineering Manager, etc.) and the candidate's profile
+   shows that craft only via self-taught skills or personal/hobby projects with no employment
+   history in it, score is capped at **60**, first cons bullet: "❗️ Немає професійного найму в
+   цій ролі — навички самостійні" (translated per output language, `❗️` kept literal).
+2. **Language gate** (`apply_language_gate`, `CAREER_LANGUAGE_GATE_KEYWORDS`) — if the posting
+   explicitly demands native-level/fully-fluent Norwegian (flytende, morsmål) and the
+   candidate's documented level is B1, score is capped at **50**, first cons bullet: "❗️
+   Вимагається вільна/рідна норвезька, у кандидата документований рівень B1". English-language
+   postings are exempt.
+3. **Cons ordering** — the prompt requires the very first cons bullet on every career card to
+   name the single biggest REAL obstacle (language, seniority, or missing diploma/license),
+   stated plainly; if a gate marker applies, that marker IS the first bullet.
+4. `analyze_job()` takes a `track` param now — `main()` classifies the track BEFORE calling
+   `analyze_job` (previously classified only after, from the result) so the career-only prompt
+   additions and gates can apply during scoring itself, not just after.
+5. To retroactively fix already-`ANALYZED` career jobs after this calibration shipped, run
+   `python analyze_worker.py --reanalyze-career-days N` — re-scores career jobs analyzed in the
+   last N days in place (score/analysis/tasks/metadata), without resending Telegram cards or
+   touching application status.
+
 ## Card format
 
 Every job card (both the list view and the single-job view in
