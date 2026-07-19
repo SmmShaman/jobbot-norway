@@ -2,8 +2,9 @@ name: Scheduled Job Scan
 
 on:
   schedule:
-    # Run every hour to check each user's individual scan_time_utc
-    - cron: '0 * * * *'
+    # Weekdays only (5 scans/week per user request); hourly trigger still
+    # respects each user's individual scan_time_utc, so one real scan per day
+    - cron: '0 * * * 1-5'
   workflow_dispatch: # Allow manual trigger
     inputs:
       force_run:
