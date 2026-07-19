@@ -157,6 +157,30 @@ it still goes through the worker/Skyvern path regardless. The old path is
 fully intact behind `FALLBACK_TO_SKYVERN_WORKER` in `telegram-bot/index.ts`
 (`false` by default) as an emergency-only escape hatch.
 
+## Confirmation UX (added 2026-07-19)
+
+Applies to every confirmation prompt sent to the user or tech-bot during the
+agent pipeline (form-fill confirmations per `skills/form-filling` phase 5, and
+any manual-review/hidden-requirement check-ins).
+
+1. **Every card is self-contained.** Include: a status emoji (🎯 career /
+   🟢 nav_quota track badge, or a plain ✅/❗️ for a yes-no check), the job
+   title, the company, a 1-2 line summary of what's being confirmed, and — if
+   this is one of several queued items — its position in the queue (e.g.
+   "Заявка 2 з 5"). The user should never need to scroll up to a previous
+   message to understand what a card is asking.
+2. **Timeout: 24 hours, not 300 seconds** — applies everywhere a confirmation
+   with a timeout exists in this pipeline (raised from the previous 5-minute
+   default, which was too short for something the user checks a few times a
+   day, not continuously). On expiry: do not silently drop the item — fall
+   back the application to `draft` status and send a single one-line bot
+   notice that it timed out and is waiting in drafts.
+3. **Strictly sequential** — when multiple applications are queued for
+   confirmation, send the next card only after the user has responded to the
+   previous one (approve/cancel/answer), never all at once. This keeps each
+   decision scoped to one job at a time and keeps the queue-position label in
+   point 1 accurate.
+
 ## Employer blacklist
 
 Hard refusal list, checked (case-insensitive substring match on `company`)

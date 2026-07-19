@@ -105,20 +105,86 @@ the worker/Skyvern path unconditionally, regardless of the flag.
 two applications that failed under it, TrendAI and Palo Alto Networks, were
 both LinkedIn). For the agent pipeline:
 
-1. **Never log into LinkedIn automatically.** An automated login is a distinct
-   risk (account ban) and is explicitly out of scope — a separate decision for
-   later, not something to sneak in as part of form-filling.
-2. On recon, check — as an anonymous/logged-out visitor — whether the job
-   posting exposes an external "Apply on company website" link. LinkedIn often
-   shows this even to visitors who aren't logged in; look for it before
-   assuming Easy Apply is the only path.
-3. If an external apply URL is found: treat it exactly like any other
-   external-form job from here on — proceed through the normal recon/fill
-   phases against that URL, not against linkedin.com.
-4. If the only apply path is Easy Apply *inside* LinkedIn (requires login): do
-   not attempt it. Set `applications.status = 'manual_review'`, make sure the
-   cover letter is already written and attached to the application, and
-   message the user with the direct job link so they can apply by hand.
+1. **Never log into LinkedIn automatically, and never store/use a LinkedIn
+   session cookie for automated requests.** Both are the same risk class
+   (account ban, ToS violation) — explicitly out of scope, permanent, not a
+   per-request toggle. Confirmed 2026-07-19: the anonymous/logged-out page
+   ALWAYS shows a sign-in wall on the "Apply" button regardless of whether the
+   underlying job is Easy Apply or an offsite/external form — do not read
+   "sign-in wall visible" as "therefore Easy Apply only," that was an actual
+   mistake made and corrected this same day (see the Walley/Norion Bank case
+   below). Anonymous recon alone cannot distinguish the two job types.
+2. **ATS-resolver cascade — the primary path now** (validated 2026-07-19,
+   87% direct-hit rate across 10 sampled LinkedIn jobs against real ATS
+   pages): given the job title + company (+ location if the title alone is
+   ambiguous), do a web search and prioritize results on known ATS domains —
+   Teamtailor (`*.teamtailor.com`, or a company's own `karriar.*`/`karriere.*`
+   subdomain), Workday (`*.myworkdayjobs.com`), Recman, Easycruit, Webcruiter,
+   Varbi, Jobylon, or a plain `careers.*` company subdomain. Verify the
+   candidate page is the same posting by comparing its description text
+   against the LinkedIn posting's description — require roughly **70%+
+   textual overlap** before treating it as a match; don't just trust the
+   title matching. If a company's job title on the external page differs from
+   LinkedIn's (e.g. localized/translated title), the description-text match is
+   what carries the verification, not the title string.
+   - Reference test set (ground truth, 2026-07-19): Tibber →
+     `jobs.tibber.com/jobs/7540838`; Siemens → `jobs.siemens.com` (Senior
+     Commercial PM Oslo); Norconsult → `wd3.myworkdayjobs...REQ-6176`; NOBA →
+     `careers.noba.bank/jobs/7740454`; Capgemini →
+     `careers.capgemini.com/1124492001` (⚠️ title on that page is Norwegian,
+     "Fullstack Utvikler" — matched via description, not title); DNB → FINN
+     `467297242`; Mesta → NAV `ab88c4da`.
+   - If a plain web search doesn't surface a direct hit (seen with NOV):
+     search the company's own careers portal directly (most companies with an
+     ATS also list open roles on their own `karriere`/`careers` page; find it
+     from the company's LinkedIn page or a general search, then search inside
+     it) before giving up on the resolver.
+   - **Offsite-marker prefilter**: LinkedIn's anonymous guest HTML (e.g. the
+     `jobs-guest/jobs/api/jobPosting/<id>` payload) carries a `trk` value on
+     the apply link — `public_jobs_apply-link-offsite` was observed on the
+     confirmed-offsite Walley/Norion Bank posting. Where this marker reliably
+     differs between Easy-Apply-only postings and offsite ones, use it as a
+     cheap early signal: offsite marker present → go straight to the
+     ATS-resolver above; treat this as a prefilter/hint, not a substitute for
+     actually verifying the resolved page's description text.
+3. **Cookie-based session cascade — proposed, NOT implemented, pending
+   explicit separate confirmation.** The idea floated 2026-07-19: fall back to
+   a stored `LINKEDIN_SESSION_COOKIE` (from env) for a handful of authenticated
+   GET requests (≤5/day) only when the resolver above finds nothing, disabling
+   itself on any challenge/checkpoint response. **This has not been written.**
+   It sits in the same risk category as rule 1 (automated use of an
+   authenticated LinkedIn session — ban risk, ToS violation) and directly
+   revisits the permanent "never automate LinkedIn login" policy from rule 1.
+   Do not implement this without a fresh, explicit, separately-flagged
+   confirmation from the user that spells out the account-ban risk — a
+   general "automate everything" instruction elsewhere is not sufficient
+   authorization for this specific piece.
+4. If an external apply URL is found (via the resolver, or a link the user
+   forwards themselves after clicking "Apply" in their own logged-in
+   LinkedIn app/browser): treat it exactly like any other external-form job
+   from here on — proceed through the normal recon/fill phases against that
+   URL, not against linkedin.com.
+5. **Asking the user for the link — last resort only**, after the resolver
+   (and, if it ever exists, the cookie cascade) both come up empty. If the
+   underlying job truly is Easy-Apply-only inside LinkedIn (requires login,
+   no external form exists at all): do not attempt it. Set
+   `applications.status = 'manual_review'`, make sure the cover letter is
+   already written and attached to the application, and message the user
+   with the direct job link so they can apply by hand.
+6. **Hidden live-form requirements are a normal, expected branch — not a
+   one-off.** The live application form is ground truth over both the
+   LinkedIn posting text and the job's own listed description; it can reveal
+   a hard requirement neither of those mentioned (confirmed case,
+   2026-07-19: Walley/Norion Bank's actual form on `karriar.norionbank.se`
+   required "goda kunskaper i svenska" — Swedish, not Norwegian, because the
+   corporate language of the whole group is Swedish — invisible from the
+   Norwegian-language LinkedIn posting). When this happens: stop before
+   filling that field, do not guess or fabricate an answer, ask the user to
+   confirm whether they actually meet it. If they don't: set
+   `applications.status = 'rejected'` with `error_message` stating the
+   specific hidden requirement found and where, and record the same fact in
+   that site's `sites/<domain>.json` profile so a future job on the same
+   domain doesn't need to rediscover it live.
 
 ## Registration flow via IMAP (planned architecture — not yet implemented)
 

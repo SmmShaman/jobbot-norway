@@ -9,6 +9,7 @@ venv/
 __pycache__/
 *.pyc
 worker/venv/
+worker/venv-vps/
 
 # Logs
 logs
