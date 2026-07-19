@@ -41,7 +41,9 @@ serve(async (req: Request) => {
   const allScannedJobIds: string[] = []; // Track all jobs from this scan
   const processedUserIds: string[] = []; // Track which users were actually scanned
   const supabase = createClient(Deno.env.get('SUPABASE_URL') ?? '', Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '');
-  const tgToken = Deno.env.get('TELEGRAM_TECH_BOT_TOKEN') || Deno.env.get('TELEGRAM_BOT_TOKEN');
+  // Scan progress/summaries are service info -> tech bot only, never fall back to the main bot
+  const tgToken = Deno.env.get('TELEGRAM_TECH_BOT_TOKEN') ?? '';
+  if (!tgToken) console.log('⚠️ TELEGRAM_TECH_BOT_TOKEN not set — scan progress messages will silently no-op (not sent to main bot)');
 
   try {
     const { forceRun, source, userId: requestUserId } = await req.json().catch(() => ({}));

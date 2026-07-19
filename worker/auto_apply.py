@@ -3620,15 +3620,14 @@ async def edit_telegram_message(chat_id: str, message_id: int, text: str):
 # ============================================
 
 async def send_tech_telegram(chat_id: str, text: str):
-    """Send a technical notification via @vitalljobtechbot."""
-    token = TELEGRAM_TECH_BOT_TOKEN or TELEGRAM_BOT_TOKEN
-    if not token or not chat_id:
+    """Send a technical notification via @vitalljobtechbot. Never falls back to the main bot."""
+    if not TELEGRAM_TECH_BOT_TOKEN or not chat_id:
         return None
     try:
         async with httpx.AsyncClient() as client:
             payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
             response = await client.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
+                f"https://api.telegram.org/bot{TELEGRAM_TECH_BOT_TOKEN}/sendMessage",
                 json=payload,
                 timeout=10.0
             )
@@ -3642,9 +3641,8 @@ async def send_tech_telegram(chat_id: str, text: str):
 
 
 async def send_tech_telegram_photo_file(chat_id: str, file_path: str, caption: str = None):
-    """Send a screenshot via @vitalljobtechbot."""
-    token = TELEGRAM_TECH_BOT_TOKEN or TELEGRAM_BOT_TOKEN
-    if not token or not chat_id:
+    """Send a screenshot via @vitalljobtechbot. Never falls back to the main bot."""
+    if not TELEGRAM_TECH_BOT_TOKEN or not chat_id:
         return None
     if not os.path.exists(file_path):
         return None
@@ -3656,7 +3654,7 @@ async def send_tech_telegram_photo_file(chat_id: str, file_path: str, caption: s
             with open(file_path, "rb") as f:
                 files = {"photo": ("screenshot.png", f, "image/png")}
                 response = await client.post(
-                    f"https://api.telegram.org/bot{token}/sendPhoto",
+                    f"https://api.telegram.org/bot{TELEGRAM_TECH_BOT_TOKEN}/sendPhoto",
                     data=data,
                     files=files,
                     timeout=30.0
@@ -3670,9 +3668,8 @@ async def send_tech_telegram_photo_file(chat_id: str, file_path: str, caption: s
 
 
 async def edit_tech_telegram_message(chat_id: str, message_id: int, text: str):
-    """Edit a message sent via @vitalljobtechbot."""
-    token = TELEGRAM_TECH_BOT_TOKEN or TELEGRAM_BOT_TOKEN
-    if not token or not chat_id or not message_id:
+    """Edit a message sent via @vitalljobtechbot. Never falls back to the main bot."""
+    if not TELEGRAM_TECH_BOT_TOKEN or not chat_id or not message_id:
         return
     try:
         async with httpx.AsyncClient() as client:
@@ -3683,7 +3680,7 @@ async def edit_tech_telegram_message(chat_id: str, message_id: int, text: str):
                 "parse_mode": "HTML"
             }
             await client.post(
-                f"https://api.telegram.org/bot{token}/editMessageText",
+                f"https://api.telegram.org/bot{TELEGRAM_TECH_BOT_TOKEN}/editMessageText",
                 json=payload,
                 timeout=10.0
             )

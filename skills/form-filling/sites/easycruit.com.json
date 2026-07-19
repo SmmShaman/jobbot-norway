@@ -1,0 +1,116 @@
+{
+  "domain": "*.easycruit.com",
+  "notes": "Norwegian ATS used by many kommuner (e.g. vestre-toten.easycruit.com). Each employer gets its own subdomain, but the form engine/field-numbering scheme is shared — this profile generalizes across all of them, do not recon from zero for a new *.easycruit.com vacancy. Guest-friendly: the 'Allerede registrert?' block is a collapsed OPTIONAL login section, not a mandatory gate — skip it and go straight to the application form. It is ONE long form (not a multi-page Next-wizard like recman) with repeatable 'add entry' subsections.",
+  "entryFlow": [
+    { "step": "check privacy consent", "selector": "input[id$=\"_accepted_privacy_statement\"]", "gotcha": "id is prefixed with a per-vacancy number, e.g. '96_accepted_privacy_statement' — match by id suffix, not exact id" },
+    { "step": "advance", "selector": "input[name=\"b_next\"]" }
+  ],
+  "fieldNamingConvention": "field_<sectionId>_<fieldNumber>, e.g. field_1_2 = first name. Section 1 = personalia (fixed, filled once). Sections 3/2/8/5/6/7 are repeatable (see repeatableSections below) and only exist after clicking their 'b_add_<sectionId>' button.",
+  "personaliaFields": [
+    { "label": "Fornavn", "selector": "input[name=\"field_1_2\"]", "type": "text" },
+    { "label": "Etternavn", "selector": "input[name=\"field_1_4\"]", "type": "text" },
+    { "label": "Kjønn", "selector": "input[name=\"field_1_5\"][value=\"m|k\"]", "type": "radio" },
+    { "label": "Fødselsdato", "selector": "select[name=\"field_1_6_date|_month|_year\"]", "type": "select-triplet" },
+    { "label": "E-post", "selector": "input[name=\"field_1_8\"]", "type": "text" },
+    { "label": "Gjenta e-post", "selector": "input[name=\"field_1_25\"]", "type": "text" },
+    { "label": "Telefon (landkode)", "selector": "select[name=\"field_1_11_prefix\"]", "type": "select", "gotcha": "'47' = Norge" },
+    { "label": "Telefon", "selector": "input[name=\"field_1_11\"]", "type": "text" },
+    { "label": "Adresse", "selector": "input[name=\"field_1_13\"]", "type": "text" },
+    { "label": "Postnummer", "selector": "input[name=\"field_1_14\"]", "type": "text" },
+    { "label": "Poststed", "selector": "input[name=\"field_1_15\"]", "type": "text" },
+    { "label": "Land", "selector": "select[name=\"field_1_16\"]", "type": "select", "gotcha": "select by { label: 'Norge' }, not by value code" },
+    { "label": "Fylke", "selector": "select[name=\"field_1_17\"]", "type": "select", "gotcha": "value codes are per-Norway-region, e.g. '10' = Innlandet; wait ~500ms after setting before the Kommune dropdown populates" },
+    { "label": "Kommune", "selector": "select[name=\"field_1_18\"]", "type": "select", "gotcha": "options depend on Fylke selection above; wait ~1500ms for it to populate before selecting" },
+    { "label": "CV", "selector": "input[name=\"field_1_22\"]", "type": "file", "gotcha": "after setInputFiles, an 'upload_button_field_1_22' button often appears and must be clicked to actually attach it — check for its presence and click if found" },
+    { "label": "Reservere fra offentlig søkerliste", "selector": "input[name=\"field_1_24\"][value=\"y|n\"]", "type": "radio", "gotcha": "always 'n' (Nei) unless user says otherwise" },
+    { "label": "Motta kopi via e-post", "selector": "input[name=\"field_1_28\"][value=\"y|n\"]", "type": "radio", "gotcha": "default 'y' (Ja)" }
+  ],
+  "repeatableSections": [
+    {
+      "sectionId": 3,
+      "name": "Utdanning",
+      "addButton": "input[name=\"b_add_3\"]",
+      "fields": [
+        { "label": "Start måned/år", "selector": "select[name=\"field_3_39_start_month|_start_year\"]" },
+        { "label": "Slutt måned/år", "selector": "select[name=\"field_3_39_end_month|_end_year\"]" },
+        { "label": "Lærested", "selector": "input[name=\"field_3_43\"]" },
+        { "label": "Grad/tittel", "selector": "input[name=\"field_3_94\"]" },
+        { "label": "Beskrivelse", "selector": "textarea[name=\"field_3_44\"]" },
+        { "label": "Land", "selector": "select[name=\"field_3_46\"]" },
+        { "label": "Pågående?", "selector": "input[name=\"field_3_48\"][value=\"y|n\"]" }
+      ],
+      "saveButton": "input[name=\"b_multi_add\"]"
+    },
+    {
+      "sectionId": 2,
+      "name": "Arbeidserfaring",
+      "addButton": "input[name=\"b_add_2\"]",
+      "fields": [
+        { "label": "Start måned/år", "selector": "select[name=\"field_2_30_start_month|_start_year\"]" },
+        { "label": "Slutt måned/år", "selector": "select[name=\"field_2_30_end_month|_end_year\"]", "gotcha": "leave unset if 'pågående'" },
+        { "label": "Arbeidsgiver", "selector": "input[name=\"field_2_34\"]" },
+        { "label": "Stilling/beskrivelse", "selector": "input[name=\"field_2_35\"]" },
+        { "label": "Pågående?", "selector": "input[name=\"field_2_37\"][value=\"y|n\"]" }
+      ],
+      "saveButton": "input[name=\"b_multi_add\"]",
+      "gotcha": "add one entry per relevant job — call addButton+fill+saveButton in a loop, one full cycle per position, most-relevant/leadership roles first"
+    },
+    {
+      "sectionId": 8,
+      "name": "Kurs/Sertifisering",
+      "addButton": "input[name=\"b_add_8\"]",
+      "fields": [
+        { "label": "Start måned/år", "selector": "select[name=\"field_8_62_start_month|_start_year\"]" },
+        { "label": "Slutt måned/år", "selector": "select[name=\"field_8_62_end_month|_end_year\"]" },
+        { "label": "Kursnavn", "selector": "input[name=\"field_8_63\"]" },
+        { "label": "Beskrivelse", "selector": "textarea[name=\"field_8_64\"]" },
+        { "label": "Utsteder", "selector": "input[name=\"field_8_65\"]" }
+      ],
+      "saveButton": "input[name=\"b_multi_add\"]"
+    },
+    {
+      "sectionId": 5,
+      "name": "Førerkort",
+      "addButton": "input[name=\"b_add_5\"]",
+      "fields": [
+        { "label": "Klasse", "selector": "select[name=\"field_5_54\"]", "gotcha": "value codes: '1' = Klasse B, '9' = Klasse E. One addEntry cycle per class held." }
+      ],
+      "saveButton": "input[name=\"b_multi_add\"]"
+    },
+    {
+      "sectionId": 6,
+      "name": "IT-kunnskaper",
+      "addButton": "input[name=\"b_add_6\"]",
+      "fields": [
+        { "label": "Verktøy/system", "selector": "input[name=\"field_6_56\"]" },
+        { "label": "Nivå", "selector": "select[name=\"field_6_57\"]", "gotcha": "'4' = Erfaren" }
+      ],
+      "saveButton": "input[name=\"b_multi_add\"]"
+    },
+    {
+      "sectionId": 7,
+      "name": "Språk",
+      "addButton": "input[name=\"b_add_7\"]",
+      "fields": [
+        { "label": "Språk", "selector": "select[name=\"field_7_58\"]", "gotcha": "value codes: '222' Ukrainsk, '160' Norsk (bokmål), '177' Russisk, '224' Engelsk" },
+        { "label": "Muntlig", "selector": "select[name=\"field_7_59\"]" },
+        { "label": "Lese", "selector": "select[name=\"field_7_60\"]" },
+        { "label": "Skriftlig", "selector": "select[name=\"field_7_61\"]" }
+      ],
+      "saveButton": "input[name=\"b_multi_add\"]",
+      "gotcha": "for Norsk bokmål use level code '7' (God kjennskap) across all three, matching the B1-honest policy — never '3' (Morsmål) or a full-fluency code. See skills/application-pipeline for the B1 rule."
+    }
+  ],
+  "jobSpecificQuestionFields": {
+    "note": "field_<N>_<M> numbering for these is per-vacancy dynamic — always confirm via recon on the live page, do not assume the numbers from a past job.",
+    "examples": [
+      { "label": "Søknadsbrev / cover letter", "type": "textarea", "seenAs": "field_13_80" },
+      { "label": "Fritekstspørsmål (varies per vacancy)", "type": "textarea", "seenAs": "field_14_290307" },
+      { "label": "Norsk muntlig/skriftlig behersket?", "type": "checkbox-group", "seenAs": "input[id=\"<dynamic>_<dynamic>\"]", "gotcha": "select 'Delvis', never 'Ja' full — see B1 policy in skills/application-pipeline" }
+    ]
+  },
+  "submitButton": {
+    "selector": "input[name=\"b_next\"]",
+    "gotcha": "the SAME button name is reused for every intermediate 'advance' click as well as the final submit — there is no separate 'Send søknad' selector. After the final click, verify success by checking the page did NOT redisplay the form with an error banner (selector: '.orangeBox, [class*=\"error\"], [class*=\"Error\"]'). If that banner element is present and the b_next button count is still > 0, the submit failed silently and must be treated as manual_review, not success."
+  }
+}

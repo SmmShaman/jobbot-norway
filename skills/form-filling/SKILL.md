@@ -72,6 +72,34 @@ form, not tied to one site. Site-specific knowledge goes in `sites/*.json`.
    and set `applications.status = 'manual_review'` rather than guessing or
    retrying blindly.
 
+Employer blacklist and relevance-score thresholds are process policy, not
+form-filling mechanics — see `skills/application-pipeline/SKILL.md` for both.
+
+## Registration flow via IMAP (planned architecture — not yet implemented)
+
+Some sites require a registered account before the application form is even
+reachable (as opposed to a guest-friendly form like easycruit — see
+`sites/easycruit.com.json`). The legacy `worker/register_site.py` only does
+Telegram Q&A relay via Skyvern and is **not** being patched or extended —
+account registration for the agent-driven Playwright flow is meant to be a
+clean, separate implementation. As of 2026-07-19, this is design-only:
+**zero code has been written**.
+
+Design (agreed 2026-07-18):
+1. Detect the site's login type first (password-based signup vs. magic-link).
+2. Register using a generated password (store it — see below).
+3. The agent reads the verification email itself via IMAP — no Telegram relay
+   needed for this step. Wait up to 5 minutes, poll only `UNSEEN` messages
+   from the site's own domain, extract the code or link from the message body.
+4. Complete verification (enter code, or navigate the extracted link) and
+   proceed into the actual application form.
+5. Persist flow state and any generated password into the `registration_flows`
+   table so re-runs don't re-register.
+
+Prerequisites already verified and ready to use once this is built:
+`AUKRO_IMAP_USER` / `AUKRO_IMAP_PASSWORD` in `worker/.env`; connectivity to
+`imap.gmail.com:993` over SSL confirmed working from throwaway test scripts.
+
 ## Known gotchas (check for these on every new site)
 
 - **Cookie banners** — dismiss first, before anything else
@@ -98,6 +126,18 @@ form, not tied to one site. Site-specific knowledge goes in `sites/*.json`.
 - **Store test assets (CV PDFs etc.) in a path that survives container
   rebuilds** (e.g. `/workspace/agent/assets/`), never in `/tmp`, which is wiped
   on rebuild.
+- **SAP SuccessFactors / DNB-style CAPTCHA-gated login** — a guest "Quick
+  Apply" flow for an email that's already registered on the site can fail to
+  complete without a full password login, and that login can be gated by a
+  CAPTCHA. Do not attempt to bypass or solve the CAPTCHA. Retrying via a fresh
+  OTP/registration loop does not route around it (confirmed after 5 cycles on
+  DNB, 2026-07-19) — treat as `manual_review` and wait for the user to pass
+  the CAPTCHA once manually via a direct URL+credentials handoff.
+- **Email-only application "forms"** (e.g. vilect.com/Frisikt Økonomi Vest) —
+  some sites' "apply" flow is just a mailto address, not a web form at all.
+  This skill's phases (recon/fill/screenshot/submit) don't apply; treat as a
+  distinct application-form type and just send the cover letter as an email
+  after user approval — do not try to force it through Playwright.
 
 ## `sites/<domain>.json` profile schema
 

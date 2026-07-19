@@ -70,6 +70,11 @@ function formatFormType(job: any): string {
   return result;
 }
 
+// --- HELPER: Format search track badge (nav_quota vs career) ---
+function formatTrackBadge(job: any): string {
+  return job.track === 'career' ? "🎯 Кар'єра" : "🟢 NAV-квота";
+}
+
 // --- HELPER: Get user_id from chat_id (for multi-user RLS) ---
 async function getUserIdFromChat(supabase: any, chatId: number | string): Promise<string | null> {
     const { data } = await supabase
@@ -182,6 +187,32 @@ async function sendTelegram(chatId: string, text: string, replyMarkup?: any) {
     }
   } catch (e) {
     console.error("❌ [TG] Network Error:", e);
+  }
+}
+
+// --- HELPER: Send Document (CSV/file attachment) ---
+async function sendTelegramDocument(chatId: string, filename: string, content: string, caption?: string) {
+  if (!BOT_TOKEN) {
+    console.error("❌ [TG] BOT_TOKEN is missing! Cannot send document.");
+    return;
+  }
+
+  const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`;
+  const form = new FormData();
+  form.append('chat_id', chatId);
+  if (caption) {
+    form.append('caption', caption);
+    form.append('parse_mode', 'HTML');
+  }
+  form.append('document', new Blob([content], { type: 'text/csv' }), filename);
+
+  try {
+    const res = await fetch(url, { method: 'POST', body: form });
+    if (!res.ok) {
+      console.error(`❌ [TG] Document send error (${res.status}):`, await res.text());
+    }
+  } catch (e) {
+    console.error("❌ [TG] Document network error:", e);
   }
 }
 
@@ -1929,6 +1960,7 @@ async function runBackgroundJob(update: any) {
                         : '';
 
                     const jobMsg = `🏢 <b>${job.title}</b>${hotEmoji}\n` +
+                        `${formatTrackBadge(job)}\n` +
                         `🏢 ${job.company || 'Компанія не вказана'}\n` +
                         `📍 ${job.location || 'Norway'}\n` +
                         `📊 <b>${score}/100</b> ${scoreEmoji}\n` +
@@ -2183,6 +2215,124 @@ async function runBackgroundJob(update: any) {
             // WORKER STATUS - redirected to @vitalljobtechbot
             if (text === '/worker') {
                 await sendTelegram(chatId, "ℹ️ Ця команда переїхала в @vitalljobtechbot\nВідкрийте бот і натисніть /worker");
+                return;
+            }
+
+            // AUTOMODE - toggle track_policies.auto_submit_allowed (no raw SQL needed)
+            if (text === '/automode' || text.startsWith('/automode ')) {
+                const userId = await getUserIdFromChat(supabase, chatId);
+                if (!userId) {
+                    await sendTelegram(chatId, "⚠️ Telegram не прив'язаний до акаунту. Використайте /link CODE");
+                    return;
+                }
+
+                const parts = text.trim().split(/\s+/);
+                const action = (parts[1] || '').toLowerCase();
+                const trackArg = (parts[2] || '').toLowerCase();
+
+                if (action !== 'on' && action !== 'off') {
+                    await sendTelegram(chatId,
+                        "ℹ️ <b>Автоматична подача заявок</b>\n\n" +
+                        "Використання:\n" +
+                        "<code>/automode on</code> — увімкнути для обох треків\n" +
+                        "<code>/automode off</code> — вимкнути для обох треків\n" +
+                        "<code>/automode on nav</code> — тільки NAV-квота\n" +
+                        "<code>/automode off career</code> — тільки Кар'єра\n\n" +
+                        "⚠️ Кар'єра-трек: авто-подача заборонена назавжди (політика проєкту), команда її не увімкне."
+                    );
+                    return;
+                }
+
+                let track: string | null = null;
+                if (trackArg) {
+                    if (trackArg === 'nav' || trackArg === 'nav_quota') track = 'nav_quota';
+                    else if (trackArg === 'career') track = 'career';
+                    else {
+                        await sendTelegram(chatId, "⚠️ Невідомий трек. Використайте: nav або career.");
+                        return;
+                    }
+                }
+
+                if (track === 'career' && action === 'on') {
+                    await sendTelegram(chatId, "⛔ Авто-подача для треку Кар'єра заборонена назавжди (політика проєкту) і не вмикається цією командою.");
+                    return;
+                }
+
+                const enable = action === 'on';
+                const targets = track ? [track] : ['nav_quota'];
+                // career auto_submit_allowed stays false regardless — only nav_quota is ever toggled on
+                for (const t of targets) {
+                    await supabase.from('track_policies').update({ auto_submit_allowed: enable, updated_at: new Date().toISOString() }).eq('track', t);
+                }
+
+                const { data: policies } = await supabase.from('track_policies').select('track, auto_submit_allowed, daily_limit').order('track');
+                let statusMsg = `✅ <b>Автомат оновлено</b>\n\n`;
+                for (const p of (policies || [])) {
+                    const label = p.track === 'nav_quota' ? '🟢 NAV-квота' : "🎯 Кар'єра";
+                    const state = p.auto_submit_allowed ? 'УВІМКНЕНО ✅' : 'вимкнено';
+                    statusMsg += `${label}: ${state}${p.daily_limit ? ` (ліміт ${p.daily_limit}/день)` : ''}\n`;
+                }
+                await sendTelegram(chatId, statusMsg);
+                return;
+            }
+
+            // NAVREPORT - submitted applications for a period, as text + CSV
+            if (text === '/navreport' || text.startsWith('/navreport ')) {
+                const userId = await getUserIdFromChat(supabase, chatId);
+                if (!userId) {
+                    await sendTelegram(chatId, "⚠️ Telegram не прив'язаний до акаунту. Використайте /link CODE");
+                    return;
+                }
+
+                const parts = text.trim().split(/\s+/);
+                const days = parseInt(parts[1], 10) > 0 ? parseInt(parts[1], 10) : 30;
+                const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+                const { data: apps } = await supabase
+                    .from('applications')
+                    .select('sent_at, created_at, status, job_id, jobs(title, company, application_form_type, track)')
+                    .eq('user_id', userId)
+                    .in('status', ['sent', 'manual_review'])
+                    .gte('sent_at', since)
+                    .order('sent_at', { ascending: false });
+
+                if (!apps || apps.length === 0) {
+                    await sendTelegram(chatId, `ℹ️ За останні ${days} днів немає відправлених заявок.`);
+                    return;
+                }
+
+                const methodLabel = (formType?: string) => {
+                    switch (formType) {
+                        case 'finn_easy': return 'FINN Enkel søknad';
+                        case 'external_form': return 'Зовнішня форма';
+                        case 'email': return 'Email';
+                        default: return formType || 'Невідомо';
+                    }
+                };
+
+                let textMsg = `📋 <b>Звіт /navreport — останні ${days} днів</b>\n\n`;
+                let csv = 'date,job_title,employer,method,track\n';
+                for (const a of apps.slice(0, 30)) {
+                    const job: any = a.jobs;
+                    const date = (a.sent_at || a.created_at || '').substring(0, 10);
+                    const method = methodLabel(job?.application_form_type);
+                    const trackLabel = job?.track === 'career' ? "Кар'єра" : 'NAV-квота';
+                    textMsg += `📅 ${date} — <b>${job?.title || '?'}</b> (${job?.company || '?'}) — ${method} — ${trackLabel}\n`;
+                    csv += `"${date}","${(job?.title || '').replace(/"/g, '""')}","${(job?.company || '').replace(/"/g, '""')}","${method}","${trackLabel}"\n`;
+                }
+                if (apps.length > 30) {
+                    textMsg += `\n… та ще ${apps.length - 30} (повний список — у CSV нижче).`;
+                    for (const a of apps.slice(30)) {
+                        const job: any = a.jobs;
+                        const date = (a.sent_at || a.created_at || '').substring(0, 10);
+                        const method = methodLabel(job?.application_form_type);
+                        const trackLabel = job?.track === 'career' ? "Кар'єра" : 'NAV-квота';
+                        csv += `"${date}","${(job?.title || '').replace(/"/g, '""')}","${(job?.company || '').replace(/"/g, '""')}","${method}","${trackLabel}"\n`;
+                    }
+                }
+
+                await sendTelegram(chatId, textMsg);
+                await sendTelegramDocument(chatId, `navreport_${days}d.csv`, csv, `📎 CSV: ${apps.length} заявок за ${days} днів`);
                 return;
             }
 
@@ -3046,7 +3196,7 @@ async function processUrlPipeline(url: string, chatId: string, supabase: any, us
 
     // MSG 1: BASIC INFO + FORM TYPE
     const formTypeInfo = formatFormType(job);
-    await sendTelegram(chatId, `🏢 <b>${job.title}</b>\n🏢 ${job.company}\n📍 ${job.location}\n\n${formTypeInfo}\n\n🔗 <a href="${job.job_url}">Оригінал вакансії</a>`);
+    await sendTelegram(chatId, `🏢 <b>${job.title}</b>\n${formatTrackBadge(job)}\n🏢 ${job.company}\n📍 ${job.location}\n\n${formTypeInfo}\n\n🔗 <a href="${job.job_url}">Оригінал вакансії</a>`);
 
     // MSG 2: ANALYZE
     if (job.status === 'ANALYZED' && job.relevance_score !== null) {

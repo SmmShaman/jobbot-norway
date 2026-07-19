@@ -59,8 +59,11 @@ async def scrape_linkedin_jobs(keyword: str, location: str = "Norway", max_resul
             if not job_url:
                 continue
 
-            # Extract job ID
-            job_id_match = re.search(r'/jobs/view/[^/]*?(\d+)', job_url)
+            # Extract job ID: LinkedIn job IDs are the trailing numeric run at the
+            # end of the path (>=6 digits). Matching the first digit run instead
+            # would grab short numbers embedded in title slugs (e.g. "web3-developer-3782910123"
+            # used to match "3"), producing truncated/wrong URLs like jobs/view/3.
+            job_id_match = re.search(r'(\d{6,})/?$', job_url)
             if not job_id_match:
                 continue
 
@@ -190,10 +193,12 @@ async def scan_linkedin_for_user(user_id: str) -> dict:
     total_found = 0
     total_new = 0
 
-    # Notify via Telegram
+    # Notify via Telegram — scan progress is service info, tech bot only, never the main bot
     if chat_id:
-        tg_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
-        if tg_token:
+        tg_token = os.getenv('TELEGRAM_TECH_BOT_TOKEN', '')
+        if not tg_token:
+            print("   ⚠️ TELEGRAM_TECH_BOT_TOKEN not set — skipping LinkedIn scan-start notice (not sending to main bot)")
+        else:
             async with httpx.AsyncClient() as client:
                 await client.post(
                     f"https://api.telegram.org/bot{tg_token}/sendMessage",
@@ -237,7 +242,11 @@ async def scan_linkedin_for_user(user_id: str) -> dict:
                     'status': 'NEW',
                     'user_id': user_id
                 })
-            supabase.table('jobs').insert(to_insert).execute()
+            # upsert instead of insert: a duplicate on jobs_user_id_url_key must not
+            # abort the whole batch and lose the other, genuinely new jobs in it.
+            supabase.table('jobs').upsert(
+                to_insert, on_conflict='user_id,job_url', ignore_duplicates=True
+            ).execute()
             total_new += len(new_jobs)
 
             # Fetch descriptions for new jobs
@@ -259,10 +268,12 @@ async def scan_linkedin_for_user(user_id: str) -> dict:
                 except Exception as e:
                     print(f"   ⚠️ Detail fetch failed: {e}")
 
-        # Telegram notification per term
+        # Telegram notification per term — scan summary is service info, tech bot only
         if chat_id:
-            tg_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
-            if tg_token:
+            tg_token = os.getenv('TELEGRAM_TECH_BOT_TOKEN', '')
+            if not tg_token:
+                print("   ⚠️ TELEGRAM_TECH_BOT_TOKEN not set — skipping LinkedIn term summary (not sending to main bot)")
+            else:
                 async with httpx.AsyncClient() as client:
                     await client.post(
                         f"https://api.telegram.org/bot{tg_token}/sendMessage",

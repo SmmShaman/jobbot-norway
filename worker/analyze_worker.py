@@ -216,6 +216,36 @@ def apply_hard_requirement_gate(score: int, title: str, requirements_text: str) 
     return score
 
 
+# Search tracks: nav_quota (NAV activity-report jobs, "can I do this") vs
+# career (leadership/IT jobs, "fit with leadership experience + company potential").
+# LinkedIn jobs are always career. NAV/FINN jobs are career only if a leadership or
+# IT signal is present in title+description, otherwise nav_quota by default.
+TRACK_LEADERSHIP_KEYWORDS = [
+    'leder', 'ledelse', 'daglig leder', 'avdelingsleder', 'teamleder', 'seksjonsleder',
+    'enhetsleder', 'driftsleder', 'styreleder', 'direktør', 'sjef', 'manager',
+    # Vitalii is an HK-dir approved teacher — leadership positions in education count
+    # as career, but a plain lærervikar (substitute teacher, no leadership) stays nav_quota.
+    'rektor', 'undervisningsinspektør', 'styrer barnehage', 'barnehagestyrer',
+]
+TRACK_IT_KEYWORDS = [
+    'it-', 'utvikler', 'developer', 'programmerer', 'systemutvikler', 'dataingeniør',
+    'devops', 'backend', 'frontend', 'fullstack', 'cloud engineer', 'it-konsulent',
+    'cto', 'tech lead',
+]
+
+
+def classify_track(job: dict) -> str:
+    """Classify a job into 'nav_quota' or 'career'. LinkedIn is always career;
+    NAV/FINN jobs are career only when a leadership/IT signal is present."""
+    if (job.get('source') or '').upper() == 'LINKEDIN':
+        return 'career'
+    haystack = f"{job.get('title', '')} {job.get('description', '')}".lower()
+    if any(kw in haystack for kw in TRACK_LEADERSHIP_KEYWORDS) or \
+       any(kw in haystack for kw in TRACK_IT_KEYWORDS):
+        return 'career'
+    return 'nav_quota'
+
+
 async def analyze_job(
     client: httpx.AsyncClient,
     job: dict,
@@ -361,7 +391,8 @@ async def send_job_card(
     job: dict,
     result: dict,
     auto_app: dict = None,
-    lang: str = 'uk'
+    lang: str = 'uk',
+    track_min_score: int = 50
 ):
     """Send unified job card to Telegram (analysis + optional auto-søknad in one message)"""
     if not TELEGRAM_TOKEN or not chat_id:
@@ -395,7 +426,9 @@ async def send_job_card(
         offers = offers[:500] + '...'
 
     # Build unified job card
+    track_badge = "🟢 NAV-квота" if job.get('track', 'nav_quota') == 'nav_quota' else "🎯 Кар'єра"
     msg = f"📊 <b>{job['title']}</b>\n"
+    msg += f"{track_badge}\n"
     msg += f"🏭 {job.get('company', 'Компанія не вказана')}\n"
     msg += f"📍 {job.get('location', 'Norway')}\n"
     if job.get('deadline'):
@@ -442,8 +475,8 @@ async def send_job_card(
                 {"text": "✅ Підтвердити", "callback_data": f"approve_app_{auto_app['id']}"}
             ]]
         }
-    elif score >= 50:
-        # No auto-søknad but relevant → write button
+    elif score >= track_min_score:
+        # No auto-søknad but relevant (per this job's track threshold) → write button
         payload['reply_markup'] = {
             "inline_keyboard": [[
                 {"text": "✍️ Написати Søknad", "callback_data": f"write_app_{job['id']}"}
@@ -552,6 +585,19 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
 
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+    # Track policies (global config, table: track_policies) — falls back to the
+    # starting values from the migration if the table is empty/unreachable.
+    track_policies = {
+        'nav_quota': {'min_score': 60, 'auto_submit_allowed': False, 'letter_style': 'standard', 'daily_limit': 10},
+        'career': {'min_score': 70, 'auto_submit_allowed': False, 'letter_style': 'wide_individual', 'daily_limit': None},
+    }
+    try:
+        policies_resp = supabase.table('track_policies').select('*').execute()
+        for row in (policies_resp.data or []):
+            track_policies[row['track']] = row
+    except Exception as e:
+        print(f"⚠️ Could not load track_policies, using defaults: {e}")
+
     print(f"🚀 Analyze Worker started at {datetime.now().isoformat()}")
     print(f"   Limit: {limit}, User: {user_id or 'all'}")
 
@@ -634,16 +680,22 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
             user_analyzed = 0
             user_cost = 0.0
             user_tokens_used = 0
+            track_counts = {'nav_quota': 0, 'career': 0}
 
             for job in user_jobs:
                 result = await analyze_job(client, job, profile, lang, custom_prompt)
 
                 if result['success']:
+                    track = classify_track(job)
+                    policy = track_policies.get(track, track_policies['nav_quota'])
+                    track_counts[track] = track_counts.get(track, 0) + 1
+
                     # Update database
                     supabase.table('jobs').update({
                         'relevance_score': result['score'],
                         'ai_recommendation': result['analysis'],
                         'tasks_summary': result['tasks'],
+                        'track': track,
                         'analysis_metadata': {
                             'aura': result['aura'],
                             'radar': result['radar'],
@@ -659,10 +711,13 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                     }).eq('id', job['id']).execute()
 
                     score = result['score']
-                    emoji = "🟢" if score >= 70 else "🟡" if score >= 50 else "⚪"
+                    track_badge = "🟢 NAV" if track == 'nav_quota' else "🎯 Кар'єра"
+                    emoji = "🟢" if score >= policy['min_score'] else "🟡" if score >= 50 else "⚪"
                     title = job['title'][:40]
                     model_tag = f" [{result['model']}]" if 'model' in result and 'fallback' in result.get('model', '') else ""
-                    print(f"   {emoji} {title} | {score}% | ${result['cost']:.4f}{model_tag}")
+                    print(f"   {emoji} {track_badge} {title} | {score}% | ${result['cost']:.4f}{model_tag}")
+
+                    job['track'] = track
 
                     # Auto-søknad generation (before sending card, so it's included)
                     auto_app = None
@@ -678,7 +733,10 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                             print(f"   ⚠️ Auto-søknad failed: {err}")
 
                     # Send unified job card to Telegram (analysis + søknad in one message)
-                    await send_job_card(client, chat_id, job, result, auto_app=auto_app, lang=lang)
+                    await send_job_card(
+                        client, chat_id, job, result, auto_app=auto_app, lang=lang,
+                        track_min_score=policy['min_score']
+                    )
 
                     if auto_app:
                         await asyncio.sleep(0.5)
@@ -695,17 +753,18 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                 # Rate limiting for Groq API
                 await asyncio.sleep(2.0)
 
-            # Auto-søknad summary for this user (sent to tech bot)
+            # Auto-søknad summary for this user (sent to tech bot only, never the main bot)
             if auto_soknad and auto_soknad_count > 0 and chat_id:
-                tech_token = TELEGRAM_TECH_TOKEN or TELEGRAM_TOKEN
-                if tech_token:
+                if not TELEGRAM_TECH_TOKEN:
+                    print("   ⚠️ TELEGRAM_TECH_BOT_TOKEN not set — skipping auto-søknad summary (not sending to main bot)")
+                else:
                     summary = f"📋 <b>Авто-søknader:</b>\n"
                     summary += f"✅ Створено: {auto_soknad_count}\n"
                     summary += f"📊 Поріг: ≥{min_score}%\n"
                     summary += f"💰 Вартість: ${auto_soknad_cost:.4f}"
                     try:
                         await client.post(
-                            f"https://api.telegram.org/bot{tech_token}/sendMessage",
+                            f"https://api.telegram.org/bot{TELEGRAM_TECH_TOKEN}/sendMessage",
                             json={'chat_id': chat_id, 'text': summary, 'parse_mode': 'HTML'}
                         )
                     except Exception as e:
@@ -755,9 +814,10 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
     except Exception as e:
         print(f"⚠️ Failed to write system log: {e}")
 
-    # 6. Send analysis summary to tech bot
-    tech_token = TELEGRAM_TECH_TOKEN or TELEGRAM_TOKEN
-    if tech_token and total_analyzed > 0:
+    # 6. Send analysis summary to tech bot only (never falls back to the main bot)
+    if not TELEGRAM_TECH_TOKEN:
+        print("⚠️ TELEGRAM_TECH_BOT_TOKEN not set — skipping analysis summary (not sending to main bot)")
+    elif total_analyzed > 0:
         # Find admin chat_id to send summary
         try:
             admin_settings = supabase.table('user_settings').select('telegram_chat_id').eq('role', 'admin').limit(1).execute()
@@ -771,11 +831,64 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                 )
                 async with httpx.AsyncClient() as tc:
                     await tc.post(
-                        f"https://api.telegram.org/bot{tech_token}/sendMessage",
+                        f"https://api.telegram.org/bot{TELEGRAM_TECH_TOKEN}/sendMessage",
                         json={'chat_id': str(admin_chat), 'text': summary_msg, 'parse_mode': 'HTML'}
                     )
         except Exception as e:
             print(f"⚠️ Failed to send tech summary: {e}")
+
+
+async def send_evening_digest():
+    """Daily digest of today's analyzed jobs, broken down by track. Sent to the tech
+    bot (this is a summary report, not a per-job action item — see Part A bot rules)."""
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    today_str = datetime.utcnow().strftime('%Y-%m-%d')
+
+    users_resp = supabase.table('user_settings').select('user_id, telegram_chat_id').execute()
+
+    async with httpx.AsyncClient() as client:
+        for u in (users_resp.data or []):
+            uid = u.get('user_id')
+            chat_id = u.get('telegram_chat_id')
+            if not uid or not chat_id:
+                continue
+
+            jobs_today = supabase.table('jobs').select('track, relevance_score') \
+                .eq('user_id', uid).gte('analyzed_at', today_str).execute()
+            apps_today = supabase.table('applications').select('id') \
+                .eq('user_id', uid).eq('status', 'sent').gte('sent_at', today_str).execute()
+
+            rows = jobs_today.data or []
+            if not rows:
+                continue
+
+            by_track = {'nav_quota': [], 'career': []}
+            for r in rows:
+                by_track.setdefault(r.get('track') or 'nav_quota', []).append(r.get('relevance_score') or 0)
+
+            nav_scores = by_track.get('nav_quota', [])
+            career_scores = by_track.get('career', [])
+            sent_count = len(apps_today.data or [])
+
+            msg = f"🌙 <b>Вечірній дайджест — {today_str}</b>\n\n"
+            msg += f"🟢 <b>NAV-квота:</b> {len(nav_scores)} проаналізовано"
+            if nav_scores:
+                msg += f", середній бал {sum(nav_scores)//len(nav_scores)}%"
+            msg += f"\n🎯 <b>Кар'єра:</b> {len(career_scores)} проаналізовано"
+            if career_scores:
+                msg += f", середній бал {sum(career_scores)//len(career_scores)}%"
+            msg += f"\n\n📤 Відправлено заявок сьогодні: {sent_count}"
+
+            if not TELEGRAM_TECH_TOKEN:
+                print(f"⚠️ TELEGRAM_TECH_BOT_TOKEN not set — skipping evening digest for user {uid[:8]} (not sending to main bot)")
+                continue
+            try:
+                await client.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_TECH_TOKEN}/sendMessage",
+                    json={'chat_id': str(chat_id), 'text': msg, 'parse_mode': 'HTML'}
+                )
+            except Exception as e:
+                print(f"⚠️ Evening digest send failed for user {uid[:8]}: {e}")
 
 
 if __name__ == '__main__':
@@ -783,10 +896,13 @@ if __name__ == '__main__':
     parser.add_argument('--limit', type=int, default=100, help='Max jobs to analyze')
     parser.add_argument('--user', type=str, help='Specific user ID to process')
     parser.add_argument('--users', type=str, help='Comma-separated user IDs to process')
+    parser.add_argument('--digest', action='store_true', help='Send evening digest broken down by track instead of analyzing')
 
     args = parser.parse_args()
 
-    if args.users:
+    if args.digest:
+        asyncio.run(send_evening_digest())
+    elif args.users:
         # Run for each user separately
         for uid in args.users.split(','):
             uid = uid.strip()
