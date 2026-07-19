@@ -125,7 +125,9 @@ Trigger (Cron/Telegram /scan) -> scheduled-scanner (Edge Function)
   -> job-scraper (scrape FINN/NAV URLs per user)
   -> extract_job_text (details, deadline, form type)
   -> GitHub Actions dispatch -> analyze_worker.py (Gemini)
-  -> Telegram notification for hot jobs (score >= 50)
+  -> Telegram card for jobs >= card_notify_min_score (per-user setting, default 40);
+     jobs below that are still analyzed/stored, just summarized in the evening digest
+
 ```
 
 ### 2. Application Generation

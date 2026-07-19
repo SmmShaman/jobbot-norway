@@ -37,6 +37,36 @@ lives here now because it's process policy, not form mechanics.
   proceed with a null user_id (multi-user isolation, see
   `.claude/rules/bugfix-patterns.md`).
 
+## Multi-user safeguard for agent hand-authoring/filling (added 2026-07-19)
+
+Two users are live in production: **Vitalii** (`user_id f92ee73e-786a-4990-b434-23f67203eb53`,
+telegram_chat_id `374008445`) and **Natalia** (`fa497240-e8dc-4a05-9186-b90ad38c858a`,
+`1094562081`) — both have `auto_soknad_enabled=true` and their own `cv_profiles` row, so the
+existing automated `analyze_worker.py` pipeline (which already loops per `user_id`, see
+`.claude/rules/bugfix-patterns.md`) legitimately writes søknader for both without agent
+involvement. Confirmed 2026-07-19: Natalia's drafts (e.g. the Pizzabakeren Gjøvik letter, signed
+"Natalia Berbeha") correctly reflect her own background (cook experience in Ukraine, B1 Norwegian)
+— no contamination with Vitalii's data.
+
+The risk this rule addresses is different: it's about the **agent** hand-authoring a letter per
+`skills/soknad-writing` or hand-filling/submitting a form via Playwright per `skills/form-filling`.
+The agent currently only holds Vitalii's own profile facts (B1 level, HK-dir docs, CV history,
+signature) in memory/skill files — touching any other user's `applications` row by hand would be
+actively wrong, not just unauthorized.
+
+**Binding rule, effective now**: before hand-authoring a cover letter or hand-filling/submitting a
+form for any `applications` row, check `application.user_id` (or joined `jobs.user_id`) against
+Vitalii's id (`f92ee73e-786a-4990-b434-23f67203eb53`).
+- Match → proceed as normal per `skills/soknad-writing` / `skills/form-filling`.
+- Mismatch (Natalia's `fa497240...`, or any future third user) → do **not** write a søknad and do
+  **not** fill/submit a form. Instead set `applications.status = 'manual_review'` and notify
+  Vitalii via the main bot, e.g. "заявка Наталі — потребує окремого налаштування."
+
+**Deferred, separate task — do not start without explicit request**: a fully `user_id`-aware
+pipeline where profile/CV/documents/letter signature are always sourced from the actual
+application owner, documents reorganized into `documents/<user>/`, and Vitalii's own diploma/
+HK-dir approval scoped only to his own applications.
+
 ## Search tracks
 
 Two tracks, both stored on `jobs.track` (`nav_quota` default | `career`),
@@ -96,11 +126,27 @@ silently, regardless of relevance score. Placeholder until a DB-backed
 
 ## Relevance threshold
 
-Default minimum `relevance_score` to consider for the manual-confirmation
-batch pipeline is **70** (raised from 60 on 2026-07-18). Per-track
-`min_score` in `track_policies` (60 for `nav_quota`, 70 for `career`) governs
-auto-mode eligibility specifically; this 70 threshold is the general batch
-cutoff applied on top of that.
+There are three distinct score thresholds in play — do not conflate them:
+
+1. **Card-notification threshold** (`user_settings.card_notify_min_score`,
+   default **40**, per-user, added 2026-07-19) — gates whether
+   `analyze_worker.py::send_job_card` pushes a per-job Telegram card to the
+   main bot at all. Every scanned job is still analyzed and stored in `jobs`
+   regardless of score; jobs scoring below this threshold just don't get a
+   card. A job with an auto-generated søknad always gets a card (needs the
+   approve button) even if its score is below this threshold, though in
+   practice `auto_soknad_min_score` (default 50) is normally higher than this
+   default anyway. Filtered-out jobs are not silently dropped — the evening
+   digest (`send_evening_digest`) reports them as a single summary line
+   ("🔕 Відсіяно N нерелевантних (score < X%)") per user, computed from that
+   user's own `card_notify_min_score`, not a hardcoded number.
+2. **Manual-confirmation batch cutoff** — default minimum `relevance_score`
+   to consider for the manual-confirmation batch pipeline is **70** (raised
+   from 60 on 2026-07-18).
+3. **Track auto-mode eligibility** — per-track `min_score` in
+   `track_policies` (60 for `nav_quota`, 70 for `career`) governs whether a
+   job is eligible for auto-submit under `/automode`, and which button
+   (`write_app_*`) appears on its card. Independent of thresholds 1 and 2.
 
 ## Auto mode (`/automode`)
 

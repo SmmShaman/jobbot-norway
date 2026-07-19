@@ -654,13 +654,14 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
             profile = profile_resp.data[0]['content']
 
             # Get user settings
-            settings_resp = supabase.table('user_settings').select('preferred_analysis_language, telegram_chat_id, job_analysis_prompt, auto_soknad_enabled, auto_soknad_min_score').eq('user_id', uid).limit(1).execute()
+            settings_resp = supabase.table('user_settings').select('preferred_analysis_language, telegram_chat_id, job_analysis_prompt, auto_soknad_enabled, auto_soknad_min_score, card_notify_min_score').eq('user_id', uid).limit(1).execute()
 
             lang = 'uk'
             chat_id = None
             custom_prompt = None
             auto_soknad = False
             min_score = 50
+            card_notify_min_score = 40
 
             if settings_resp.data:
                 settings = settings_resp.data[0]
@@ -670,6 +671,7 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                 custom_prompt = settings.get('job_analysis_prompt')
                 auto_soknad = settings.get('auto_soknad_enabled', False) or False
                 min_score = settings.get('auto_soknad_min_score', 50) or 50
+                card_notify_min_score = settings.get('card_notify_min_score', 40) or 40
 
             lang_full_name = LANG_MAP.get(lang, 'Ukrainian')
             auto_label = f" | auto-søknad≥{min_score}%" if auto_soknad else ""
@@ -681,6 +683,7 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
             user_cost = 0.0
             user_tokens_used = 0
             track_counts = {'nav_quota': 0, 'career': 0}
+            filtered_count = 0
 
             for job in user_jobs:
                 result = await analyze_job(client, job, profile, lang, custom_prompt)
@@ -732,11 +735,16 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                             err = soknad_result.get('message', 'Unknown error')
                             print(f"   ⚠️ Auto-søknad failed: {err}")
 
-                    # Send unified job card to Telegram (analysis + søknad in one message)
-                    await send_job_card(
-                        client, chat_id, job, result, auto_app=auto_app, lang=lang,
-                        track_min_score=policy['min_score']
-                    )
+                    # Send unified job card to Telegram (analysis + søknad in one message) --
+                    # gated by card_notify_min_score, except an auto-generated søknad always
+                    # gets a card since it needs the approve button regardless of threshold.
+                    if auto_app is not None or result['score'] >= card_notify_min_score:
+                        await send_job_card(
+                            client, chat_id, job, result, auto_app=auto_app, lang=lang,
+                            track_min_score=policy['min_score']
+                        )
+                    else:
+                        filtered_count += 1
 
                     if auto_app:
                         await asyncio.sleep(0.5)
@@ -752,6 +760,9 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
 
                 # Rate limiting for Groq API
                 await asyncio.sleep(2.0)
+
+            if filtered_count > 0:
+                print(f"   🔕 Filtered (no card, score < {card_notify_min_score}): {filtered_count} jobs — see evening digest")
 
             # Auto-søknad summary for this user (sent to tech bot only, never the main bot)
             if auto_soknad and auto_soknad_count > 0 and chat_id:
@@ -844,7 +855,7 @@ async def send_evening_digest():
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     today_str = datetime.utcnow().strftime('%Y-%m-%d')
 
-    users_resp = supabase.table('user_settings').select('user_id, telegram_chat_id').execute()
+    users_resp = supabase.table('user_settings').select('user_id, telegram_chat_id, card_notify_min_score').execute()
 
     async with httpx.AsyncClient() as client:
         for u in (users_resp.data or []):
@@ -852,6 +863,7 @@ async def send_evening_digest():
             chat_id = u.get('telegram_chat_id')
             if not uid or not chat_id:
                 continue
+            card_notify_min_score = u.get('card_notify_min_score', 40) or 40
 
             jobs_today = supabase.table('jobs').select('track, relevance_score') \
                 .eq('user_id', uid).gte('analyzed_at', today_str).execute()
@@ -869,6 +881,7 @@ async def send_evening_digest():
             nav_scores = by_track.get('nav_quota', [])
             career_scores = by_track.get('career', [])
             sent_count = len(apps_today.data or [])
+            filtered_count = sum(1 for r in rows if (r.get('relevance_score') or 0) < card_notify_min_score)
 
             msg = f"🌙 <b>Вечірній дайджест — {today_str}</b>\n\n"
             msg += f"🟢 <b>NAV-квота:</b> {len(nav_scores)} проаналізовано"
@@ -878,6 +891,8 @@ async def send_evening_digest():
             if career_scores:
                 msg += f", середній бал {sum(career_scores)//len(career_scores)}%"
             msg += f"\n\n📤 Відправлено заявок сьогодні: {sent_count}"
+            if filtered_count > 0:
+                msg += f"\n🔕 Відсіяно {filtered_count} нерелевантних (score < {card_notify_min_score}%)"
 
             if not TELEGRAM_TECH_TOKEN:
                 print(f"⚠️ TELEGRAM_TECH_BOT_TOKEN not set — skipping evening digest for user {uid[:8]} (not sending to main bot)")
