@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://ptrmidlhfdbybxmyovtm.supabase.co")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://db-jobbot.vitalii.no")
 SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 
 

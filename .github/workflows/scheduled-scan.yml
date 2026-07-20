@@ -37,7 +37,7 @@ jobs:
           echo "Force run: $FORCE_RUN"
 
           response=$(curl -s -w "\n%{http_code}" -X POST \
-            "https://ptrmidlhfdbybxmyovtm.supabase.co/functions/v1/scheduled-scanner" \
+            "https://db-jobbot.vitalii.no/functions/v1/scheduled-scanner" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -d "{\"source\": \"github-actions\", \"forceRun\": $FORCE_RUN}")
