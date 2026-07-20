@@ -840,6 +840,27 @@ def normalize_phone_for_norway(phone: str) -> str:
     return digits
 
 
+CURRENT_DATE_TERMS = {'nåværende', 'present', 'current', 'pågående', 'nå', 'now', 'ongoing', 'dd'}
+
+
+def get_current_job(work_experience: list) -> dict:
+    """
+    Returns the work_experience entry that is actually ongoing (no endDate,
+    or endDate is a "still working here" term like "nåværende"/"present").
+
+    work_experience[0] is only the most RECENT entry, not necessarily a CURRENT
+    one -- a candidate with no job right now still has an [0] entry (their last
+    job), which must not be reported as their current position.
+    """
+    if not work_experience:
+        return {}
+    first = work_experience[0]
+    end_date = str(first.get('endDate', '') or '').strip().lower()
+    if end_date == '' or end_date in CURRENT_DATE_TERMS or first.get('isCurrentPosition'):
+        return first
+    return {}
+
+
 # ============================================
 # FLOW ROUTER - Routes to appropriate handler
 # based on application_form_type
@@ -2265,9 +2286,9 @@ async def smart_match_fields(extracted_fields: list, profile: dict, kb_data: dic
     if any('norsk' in l.lower() or 'norwe' in l.lower() for l in lang_names):
         available_data['behersker_norsk'] = 'Ja'
 
-    # Work experience
-    if work_exp:
-        current_job = work_exp[0]
+    # Work experience (only report as "current" if the job actually has no end date)
+    current_job = get_current_job(work_exp)
+    if current_job:
         available_data['current_position'] = current_job.get('position', '') or current_job.get('title', '')
         available_data['current_company'] = current_job.get('company', '')
 
@@ -3233,7 +3254,7 @@ async def trigger_skyvern_task_with_credentials(
 
     # Extract work experience
     work_experience = structured.get('workExperience', [])
-    current_job = work_experience[0] if work_experience else {}
+    current_job = get_current_job(work_experience)
 
     # Extract education
     education = structured.get('education', [])
@@ -3300,10 +3321,9 @@ async def trigger_skyvern_task_with_credentials(
 
     # Normalize "Nåværende" dates in work experience — Webcruiter/ATS expect
     # actual dates or empty, not text like "Nåværende" / "Present" / "Pågående"
-    current_date_terms = {'nåværende', 'present', 'current', 'pågående', 'nå', 'now', 'ongoing', 'dd'}
     for exp in work_experience:
         end_date = str(exp.get('endDate', '') or '').strip().lower()
-        if end_date in current_date_terms:
+        if end_date in CURRENT_DATE_TERMS:
             exp['endDate'] = ''  # Empty = current position, ATS will use checkbox
             exp['isCurrentPosition'] = True
 
@@ -3709,13 +3729,12 @@ async def build_form_payload(app_data: dict, profile: dict, user_id: str = None)
     # Work experience - use 'position' field (not 'title')
     work_experience = structured.get('workExperience', []) or []
     # Normalize "Nåværende" dates — ATS forms expect actual dates or empty
-    current_date_terms = {'nåværende', 'present', 'current', 'pågående', 'nå', 'now', 'ongoing', 'dd'}
     for exp in work_experience:
         end_date = str(exp.get('endDate', '') or '').strip().lower()
-        if end_date in current_date_terms:
+        if end_date in CURRENT_DATE_TERMS:
             exp['endDate'] = ''
             exp['isCurrentPosition'] = True
-    current_job = work_experience[0] if work_experience else {}
+    current_job = get_current_job(work_experience)
 
     # Education
     education = structured.get('education', []) or []

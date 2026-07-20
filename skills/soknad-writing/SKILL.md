@@ -47,12 +47,28 @@ model, but the actual authoring guide for the agent.
    that shows judgment, not just duties performed.
 3. **Bridge to current situation** — if self-employed / between roles, frame
    it as active, ongoing, skill-building — not a gap.
-4. **Why this employer specifically** — reference something concrete from the
+4. **Employment status & tense (binding)** — check the profile's
+   `current_position`/`current_company` (or the latest `workExperience` entry's
+   `endDate`) before writing about the most recent role:
+   - If that role has an end date (even the most recent one in the list), it
+     is **finished**. Write it in preteritum like every other past role
+     (`jobbet`, `hadde ansvar`, `bygde opp`, `rådgav jeg`) — never present
+     tense, never "jeg jobber nå hos X". A finished job is not a current job
+     just because it's the newest entry.
+   - Only write present/present-perfect ("jeg jobber", "har jeg drevet") for a
+     role that is genuinely ongoing (empty `endDate`, or a term like
+     `nåværende`/`present`/`pågående`).
+   - If there is no current role at all (candidate is between jobs), do not
+     invent one — use the "Bridge to current situation" framing above
+     instead (active job-seeking, skill-building, self-driven activity), in
+     past/present-perfect tense about what led here, not a fake "I currently
+     work at X."
+6. **Why this employer specifically** — reference something concrete from the
    job ad or company (training program, career path, team structure), tied to
    what you personally value in a workplace.
-5. **Norwegian-level disclosure (if relevant)** — see B1 rule below. Frame as
+7. **Norwegian-level disclosure (if relevant)** — see B1 rule below. Frame as
    an honest, continuously-improving skill, not an apology.
-6. **Closing** — invite a conversation, sign with full name.
+8. **Closing** — invite a conversation, sign with full name.
 
 ## Norwegian B1 honesty rule (binding, do not soften or embellish)
 
