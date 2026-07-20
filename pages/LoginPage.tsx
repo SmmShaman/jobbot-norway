@@ -3,8 +3,8 @@ import React, { useState } from 'react';
 import { useLanguage } from '../contexts/LanguageContext';
 import { Bot, Loader2, Mail, Lock, ArrowRight, AlertCircle } from 'lucide-react';
 
-const SUPABASE_URL = 'https://ptrmidlhfdbybxmyovtm.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB0cm1pZGxoZmRieWJ4bXlvdnRtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI0MzQ3NDksImV4cCI6MjA3ODAxMDc0OX0.rdOIJ9iMnbz5uxmGrtxJxb0n1cwf6ee3ppz414IaDWM';
+const SUPABASE_URL = 'https://db-jobbot.vitalii.no';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjIwMDAwMDAwMDB9.4uAt57Hq0Sw9CqmqB64PkwdD1yhX8k7-c8R6DArZTls';
 
 export const LoginPage: React.FC = () => {
   const { t } = useLanguage();
@@ -53,7 +53,7 @@ export const LoginPage: React.FC = () => {
           token_type: data.token_type,
           user: data.user,
         };
-        localStorage.setItem('sb-ptrmidlhfdbybxmyovtm-auth-token', JSON.stringify(sessionData));
+        localStorage.setItem('sb-db-jobbot-auth-token', JSON.stringify(sessionData));
         console.log('[Login] Session stored, reloading page...');
         // Reload to pick up the new session
         window.location.reload();
