@@ -143,19 +143,43 @@ pattern as the existing `formatFormType(job)` helper.
 verified or hit a blocker — see `skills/form-filling` gotchas) | `failed` |
 `rejected`.
 
-### Legacy worker vs. agent pipeline (added 2026-07-19)
+### Skyvern decommissioned — agent pipeline owns everything (updated 2026-07-20)
 
-External-form (non-FINN) submissions are now owned by the agent-driven
-Playwright pipeline, not the legacy Python worker/Skyvern. The main bot's
-approve/retry buttons mark `applications.submission_method = 'agent'` when
-queuing (`queueForAgentPipeline` in `telegram-bot/index.ts`), and the legacy
-worker's `claim_applications()` RPC skips any row so marked — see
-`skills/form-filling`'s "Agent-wake contract" section for the full mechanism,
-and its "LinkedIn branch" section for how `linkedin_easy_apply` jobs are
-handled (no automated LinkedIn login, ever). FINN Enkel Søknad is unaffected —
-it still goes through the worker/Skyvern path regardless. The old path is
-fully intact behind `FALLBACK_TO_SKYVERN_WORKER` in `telegram-bot/index.ts`
-(`false` by default) as an emergency-only escape hatch.
+Skyvern is fully decommissioned as of 2026-07-20. ALL submissions — external
+forms AND FINN Enkel Søknad — are now owned by the agent-driven Playwright
+pipeline, not the legacy Python worker. There is no fallback path anymore:
+`FALLBACK_TO_SKYVERN_WORKER` has been removed entirely from
+`telegram-bot/index.ts` (it is not a `false`-by-default escape hatch, it does
+not exist).
+
+**The trigger contract (requirement for a scheduled task/poller):** the agent
+should wake and fill a form for any `applications` row where
+`status = 'sending' AND submission_method = 'agent'`. Every code path that
+queues an application for submission now sets both fields together:
+- `queueForAgentPipeline()` in `telegram-bot/index.ts` — used by the
+  `auto_apply_`/`queue_agent_`/`retry_app_` button handlers (external forms).
+- `finn-apply/index.ts` — used by the FINN "Enkel Søknad" dashboard button;
+  sets `status='sending', submission_method='agent'` directly (previously
+  this function queued for the worker/Skyvern; now it queues for the agent
+  like everything else).
+
+The legacy worker's `claim_applications()` RPC excludes `submission_method =
+'agent'` rows (migration `20260719132000_agent_pipeline_claim_exclusion.sql`),
+and `worker/auto_apply.py::process_application()` additionally has an
+early-return guard (added 2026-07-20) that routes any row it somehow still
+receives straight back to `status='sending', submission_method='agent'`
+without touching Skyvern — a second line of defense, not the primary
+mechanism. The worker no longer fills or submits any form, FINN or external.
+
+See `skills/form-filling`'s "Agent-wake contract" section for the full
+fill-side mechanism, and its "LinkedIn branch" section for how
+`linkedin_easy_apply` jobs are handled (no automated LinkedIn login, ever).
+
+**Known gap:** routing is fully live, but a tested, live FINN Playwright
+fill-script (including the 2FA relay) has not yet been built — see
+`skills/form-filling`'s FINN section. Until that exists, FINN applications
+queued this way should be expected to land in `manual_review` rather than
+`sent`.
 
 ## Confirmation UX (added 2026-07-19)
 

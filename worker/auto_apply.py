@@ -4940,6 +4940,27 @@ async def process_application(app, skip_confirmation: bool = False):
     else:
         await log(f"   ⚠️ No user_id for job - cannot send Telegram notifications")
 
+    # === SKYVERN DECOMMISSIONED (2026-07-20) ===
+    # This worker no longer fills or submits any forms (FINN or external). All
+    # application submission -- including FINN Enkel Soknad -- now happens via
+    # the agent-driven Playwright pipeline (submission_method='agent'), which
+    # a scheduled task wakes on status='sending'. In normal operation this
+    # function is never even reached for new applications, since
+    # claim_applications() already excludes submission_method='agent' rows
+    # (migration 20260719132000_agent_pipeline_claim_exclusion.sql) and every
+    # caller now sets that flag. This guard exists as a second line of defense
+    # for any stray pre-existing row that lacks the flag.
+    await log(f"↪️ Routing to agent pipeline (Skyvern decommissioned): {job_title}")
+    supabase.table("applications").update({
+        "status": "sending",
+        "submission_method": "agent"
+    }).eq("id", app_id).execute()
+    if chat_id:
+        await send_telegram(chat_id,
+            f"↪️ <b>{job_title}</b>\n\n⏳ Заявка передана агенту на заповнення."
+        )
+    return False
+
     # === FLOW ROUTER ===
     # Route to appropriate flow based on form type
     # This determines HOW to process the application before we start
@@ -5871,15 +5892,10 @@ async def cleanup_stale_skyvern_tasks():
 
 
 async def main():
-    await log("🌉 Skyvern Bridge started")
+    await log("🌉 Worker started (Skyvern decommissioned 2026-07-20 -- profile/KB support + LinkedIn scan only)")
 
-    # Startup health check (non-blocking - just a warning)
-    skyvern_ok = await check_skyvern_health()
-    if skyvern_ok:
-        await log("✅ Skyvern is accessible")
-    else:
-        await log("⚠️ Skyvern is NOT accessible at " + SKYVERN_URL)
-        await log("   Worker will continue (needed for cleanup), but task submissions will fail")
+    # Skyvern is permanently decommissioned; this worker no longer talks to it.
+    skyvern_ok = False
 
     # Release stale claims from previous crash of THIS worker
     try:
@@ -5907,9 +5923,6 @@ async def main():
 
     # Cleanup stuck applications on startup
     await cleanup_stuck_applications()
-
-    # Cleanup stale Skyvern tasks (from previous worker sessions)
-    await cleanup_stale_skyvern_tasks()
 
     await log(f"📡 Polling every {POLL_INTERVAL} seconds for new applications...")
     await log(f"🔀 Parallel: up to {MAX_CONCURRENT_USERS} users concurrently")
@@ -5953,15 +5966,6 @@ async def main():
 
         except Exception as e:
             await log(f"⚠️ Error: {e}")
-
-        # Periodic Skyvern health check + HF keepalive (every ~5 min)
-        # HF Spaces sleeps after 15 min inactivity, so ping every 5 min
-        if poll_cycle % 30 == 0:
-            skyvern_ok = await check_skyvern_health()
-
-        # Periodic Skyvern task cleanup (every ~10 min = 60 cycles * 10s)
-        if poll_cycle % 60 == 30:
-            await cleanup_stale_skyvern_tasks()
 
         # LinkedIn scanning (once per day, from local machine — Edge Functions blocked by LinkedIn)
         # 8640 cycles * 10s = 24 hours

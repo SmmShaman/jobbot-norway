@@ -1,7 +1,8 @@
 // finn-apply/index.ts
 const VERSION_STAMP = '2026-03-29-force-redeploy';
 // Edge Function to mark application for FINN submission
-// The actual Skyvern call is done by the local worker (auto_apply.py)
+// The actual form fill is done by the agent-driven Playwright pipeline
+// (submission_method='agent') -- Skyvern decommissioned 2026-07-20.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
@@ -15,7 +16,6 @@ const corsHeaders = {
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const TELEGRAM_BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") || "";
-const TELEGRAM_TECH_BOT_TOKEN = Deno.env.get("TELEGRAM_TECH_BOT_TOKEN") || "";
 
 interface RequestBody {
     jobId: string;
@@ -161,12 +161,12 @@ serve(async (req: Request) => {
 
         const telegramChatId = settings?.telegram_chat_id;
 
-        // 4. Update application status to 'sending' with finn_apply flag
-        // The local worker (auto_apply.py) will pick this up
+        // 4. Update application status to 'sending', routed to the agent pipeline
         await supabase
             .from("applications")
             .update({
                 status: "sending",
+                submission_method: "agent",
                 skyvern_metadata: {
                     source: "dashboard",
                     finn_apply: true,
@@ -188,14 +188,11 @@ serve(async (req: Request) => {
 📋 *${job.title}*
 🏢 ${job.company || "Unknown"}
 
-⏳ Локальний worker зараз обробить заявку.
+⏳ Агент зараз обробить заявку.
 🔐 Очікуйте запит на 2FA код!
 
 Коли отримаєте код на пошту, надішліть:
-\`/code XXXXXX\`
-
-⚠️ Переконайтесь що worker запущено:
-\`./worker/start.sh\``;
+\`/code XXXXXX\``;
 
             await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
                 method: "POST",
@@ -206,43 +203,6 @@ serve(async (req: Request) => {
                     parse_mode: "Markdown"
                 })
             });
-        }
-
-        // 7. Check if worker appears to be running (same pattern as telegram-bot)
-        let workerWarning: string | null = null;
-        try {
-            const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-            const { data: stuckApps } = await supabase
-                .from("applications")
-                .select("id, updated_at")
-                .eq("status", "sending")
-                .lt("updated_at", twoMinAgo);
-
-            if (stuckApps && stuckApps.length > 0) {
-                const oldestMin = Math.round(
-                    (Date.now() - new Date(stuckApps[0].updated_at).getTime()) / 60000
-                );
-                workerWarning = `Worker може бути не запущений! ${stuckApps.length} заявок в черзі (найстаріша: ${oldestMin} хв). Запустіть: cd worker && python auto_apply.py`;
-            }
-        } catch (e) {
-            console.log("[finn-apply] Worker check error:", e);
-        }
-
-        // 7b. Send worker warning to tech bot
-        if (workerWarning && telegramChatId && TELEGRAM_TECH_BOT_TOKEN) {
-            try {
-                await fetch(`https://api.telegram.org/bot${TELEGRAM_TECH_BOT_TOKEN}/sendMessage`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        chat_id: telegramChatId,
-                        text: `⚠️ <b>Worker Warning</b>\n\n${workerWarning}`,
-                        parse_mode: "HTML"
-                    })
-                });
-            } catch (e) {
-                console.log("[finn-apply] Tech bot send error:", e);
-            }
         }
 
         // 8. Log to system_logs
@@ -262,9 +222,8 @@ serve(async (req: Request) => {
         return new Response(
             JSON.stringify({
                 success: true,
-                message: "Application queued for FINN submission. Run ./worker/start.sh locally.",
-                queued: true,
-                ...(workerWarning ? { workerWarning } : {})
+                message: "Application queued for FINN submission via the agent pipeline.",
+                queued: true
             }),
             { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );

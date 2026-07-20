@@ -9,11 +9,12 @@ auto-loads in every future session. **After any change here, re-copy it to
 
 ## Why this exists
 
-Skyvern (hosted browser automation) is being phased out for job-application
-forms. Instead, the agent itself drives a local headless Chromium via
-Playwright, directly in its own container — no separate worker/service needed.
-This is a generic method for filling *any* recruitment site's application
-form, not tied to one site. Site-specific knowledge goes in `sites/*.json`.
+Skyvern (hosted browser automation) is fully decommissioned as of 2026-07-20.
+The agent itself drives a local headless Chromium via Playwright, directly in
+its own container — no separate worker/service needed. This is a generic
+method for filling *any* recruitment site's application form, not tied to one
+site, including FINN Enkel Søknad. Site-specific knowledge goes in
+`sites/*.json`.
 
 ## Environment constants (fixed, do not vary per site)
 
@@ -77,27 +78,43 @@ form-filling mechanics — see `skills/application-pipeline/SKILL.md` for both.
 
 ## Agent-wake contract (how the agent learns there's work to do)
 
-Since 2026-07-19, the Telegram bot's approve/retry buttons for non-FINN
-applications set `applications.status = 'sending'` AND
-`applications.submission_method = 'agent'` (see `queueForAgentPipeline` in
-`supabase/functions/telegram-bot/index.ts`). This flag is also what keeps the
-legacy Python worker (`worker/auto_apply.py`) from ever touching these rows —
-its `claim_applications()` RPC excludes `submission_method = 'agent'` (migration
-`20260719132000_agent_pipeline_claim_exclusion.sql`), so there is no race
-between the two pipelines.
+The trigger is: `applications.status = 'sending' AND applications.
+submission_method = 'agent'`. Every queuing path — external forms AND FINN
+Enkel Søknad alike — sets both fields together:
+- `queueForAgentPipeline()` in `supabase/functions/telegram-bot/index.ts`,
+  used by the `auto_apply_`/`queue_agent_`/`retry_app_` button handlers.
+- `supabase/functions/finn-apply/index.ts`, used by the FINN "Enkel Søknad"
+  dashboard button.
+
+This same flag is what keeps the legacy Python worker
+(`worker/auto_apply.py`) from ever touching these rows — its
+`claim_applications()` RPC excludes `submission_method = 'agent'` (migration
+`20260719132000_agent_pipeline_claim_exclusion.sql`), and as of 2026-07-20
+`process_application()` additionally has an early-return guard that routes
+any row it still somehow receives straight to `status='sending',
+submission_method='agent'` without calling Skyvern — belt-and-suspenders, not
+the primary mechanism.
 
 A `schedule_task` poller (script-gated, empty-queue-safe) checks for
-`applications` rows with `status = 'sending' AND submission_method = 'agent'`
-and wakes the agent when one exists. On wake: pick up the row, run phases 1-8
-above, and on success set `status = 'sent'` (or `manual_review` on any
-failure/gotcha per phase 8) — do not touch `submission_method` after that,
-it's a historical marker, not a live state field.
+`applications` rows matching the trigger above and wakes the agent when one
+exists. On wake: pick up the row, run phases 1-8 above, and on success set
+`status = 'sent'` (or `manual_review` on any failure/gotcha per phase 8) — do
+not touch `submission_method` after that, it's a historical marker, not a
+live state field.
 
-The legacy Skyvern/worker path still exists and is reachable only if someone
-flips `FALLBACK_TO_SKYVERN_WORKER = true` in `telegram-bot/index.ts` — treat it
-as an emergency-only escape hatch, not a normal branch to maintain going
-forward. FINN Enkel Søknad is untouched by any of this; it still goes through
-the worker/Skyvern path unconditionally, regardless of the flag.
+**Skyvern is gone — there is no fallback path.** `FALLBACK_TO_SKYVERN_WORKER`
+has been removed entirely from `telegram-bot/index.ts`, and
+`worker/auto_apply.py` no longer calls Skyvern under any code path.
+
+**FINN Enkel Søknad — routing is live, the fill script is not built yet.**
+`finn-apply/index.ts` queues FINN applications into the same agent pipeline
+as everything else, but a tested, live Playwright fill-script for
+`finn.no/job/apply` (including the FINN login + 2FA relay, previously
+Skyvern's job via `finn-2fa-webhook`/`finn_auth_requests`) has not been
+written. Until it exists, treat any FINN row that reaches phase 1 as a fresh
+site-onboarding task — recon it like any new `sites/<domain>.json` site
+(phase 1 below) rather than assuming prior Skyvern-era FINN logic still
+applies, and expect `manual_review` as the realistic outcome for now.
 
 ## LinkedIn branch
 

@@ -15,11 +15,10 @@ console.log("🤖 [TelegramBot] v15.0 - /apply command for batch FINN Easy submi
 const BOT_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN');
 console.log(`🤖 [TelegramBot] BOT_TOKEN exists: ${!!BOT_TOKEN}`);
 
-// Old external-form path (Python worker + Skyvern). Kept intact as a fallback --
-// buttons no longer route here by default; the agent-driven Playwright pipeline
-// (submission_method='agent') owns new external-form submissions instead.
-// FINN Enkel Soknad is unaffected either way.
-const FALLBACK_TO_SKYVERN_WORKER = false;
+// Skyvern decommissioned 2026-07-20. All apply/confirm buttons (external forms
+// AND FINN Enkel Soknad) route to the agent-driven Playwright pipeline
+// (submission_method='agent') -- see skills/form-filling and
+// skills/application-pipeline for the full contract.
 
 // --- HELPER: Format Application Form Type ---
 function formatFormType(job: any): string {
@@ -99,28 +98,6 @@ async function getUserLanguage(supabase: any, userId: string): Promise<string> {
         .eq('user_id', userId)
         .single();
     return data?.preferred_analysis_language || 'uk';
-}
-
-// --- HELPER: Check if worker is running (no stuck 'sending' applications) ---
-async function checkWorkerRunning(supabase: any, userId: string): Promise<{ isRunning: boolean; stuckCount: number; oldestMinutes: number }> {
-    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-
-    const { data: stuckApps } = await supabase
-        .from('applications')
-        .select('id, updated_at')
-        .eq('user_id', userId)
-        .eq('status', 'sending')
-        .lt('updated_at', twoMinutesAgo)
-        .order('updated_at', { ascending: true });
-
-    if (!stuckApps || stuckApps.length === 0) {
-        return { isRunning: true, stuckCount: 0, oldestMinutes: 0 };
-    }
-
-    const oldestTime = new Date(stuckApps[0].updated_at).getTime();
-    const oldestMinutes = Math.round((Date.now() - oldestTime) / 60000);
-
-    return { isRunning: false, stuckCount: stuckApps.length, oldestMinutes };
 }
 
 // --- HELPER: Queue an application for the agent-driven Playwright pipeline ---
@@ -405,19 +382,6 @@ async function runBackgroundJob(update: any) {
                     return;
                 }
 
-                // Check if worker is running
-                const workerStatus = await checkWorkerRunning(supabase, userId);
-                if (!workerStatus.isRunning) {
-                    await sendTelegram(chatId,
-                        `⚠️ <b>Worker не запущений!</b>\n\n` +
-                        `У черзі ${workerStatus.stuckCount} заявок (найстаріша: ${workerStatus.oldestMinutes} хв)\n\n` +
-                        `<b>Запусти worker:</b>\n` +
-                        `<code>cd worker && python auto_apply.py</code>\n\n` +
-                        `Після запуску натисни кнопку ще раз.`
-                    );
-                    return;
-                }
-
                 // Get application with job info
                 const { data: app } = await supabase
                     .from('applications')
@@ -594,19 +558,6 @@ async function runBackgroundJob(update: any) {
                     return;
                 }
 
-                // Check if worker is running
-                const workerStatus = await checkWorkerRunning(supabase, userId);
-                if (!workerStatus.isRunning && workerStatus.stuckCount > 0) {
-                    await sendTelegram(chatId,
-                        `⚠️ <b>Worker не запущений!</b>\n\n` +
-                        `У черзі ${workerStatus.stuckCount} заявок (найстаріша: ${workerStatus.oldestMinutes} хв)\n\n` +
-                        `<b>Запусти worker:</b>\n` +
-                        `<code>cd ~/Jobbot-NO && ./worker/start.sh</code>\n\n` +
-                        `Після запуску надішли /apply all ще раз.`
-                    );
-                    return;
-                }
-
                 await sendTelegram(chatId, "⏳ <b>Масова подача розпочата...</b>\nЦе може зайняти кілька хвилин.");
 
                 // Today's date at midnight UTC
@@ -747,7 +698,7 @@ async function runBackgroundJob(update: any) {
                 if (queued > 0) report += `⚡ Відправлено в чергу: ${queued}\n`;
                 if (errors > 0) report += `❌ Помилки: ${errors}\n`;
                 if (skippedGen > 0) report += `⏭ Пропущено (ліміт): ${skippedGen} — надішли /apply all ще раз\n`;
-                report += `\n⏳ Worker обробить заявки по 1-5 хвилин кожну.\n🔐 Очікуйте запити на 2FA коди!`;
+                report += `\n⏳ Агент обробить заявки по 1-5 хвилин кожну.\n🔐 Очікуйте запити на 2FA коди!`;
 
                 await sendTelegram(chatId, report);
                 return;
@@ -905,96 +856,17 @@ async function runBackgroundJob(update: any) {
                 }
             }
 
-            // AUTO-APPLY (legacy external-form path: Python worker + Skyvern)
-            // Kept behind FALLBACK_TO_SKYVERN_WORKER. Default: redirect to the
-            // agent-driven pipeline so any stale button still routes correctly.
+            // AUTO-APPLY (external forms) -- routes to the agent-driven Playwright pipeline
             if (data.startsWith('auto_apply_')) {
-                if (!FALLBACK_TO_SKYVERN_WORKER) {
-                    if (cbMessageId) await removeButtons(chatId, cbMessageId);
-                    const appId = data.split('auto_apply_')[1];
-                    const userId = await getUserIdFromChat(supabase, chatId);
-                    if (!userId) {
-                        await sendTelegram(chatId, "⚠️ Telegram не прив'язаний до акаунту. Використайте /link CODE");
-                        return;
-                    }
-                    await queueForAgentPipeline(supabase, appId, userId, chatId);
-                    return;
-                }
                 if (cbMessageId) await removeButtons(chatId, cbMessageId);
                 const appId = data.split('auto_apply_')[1];
                 const userId = await getUserIdFromChat(supabase, chatId);
-
                 if (!userId) {
                     await sendTelegram(chatId, "⚠️ Telegram не прив'язаний до акаунту. Використайте /link CODE");
                     return;
                 }
-
-                // Check if worker is running
-                const workerStatus = await checkWorkerRunning(supabase, userId);
-                if (!workerStatus.isRunning) {
-                    await sendTelegram(chatId,
-                        `⚠️ <b>Worker не запущений!</b>\n\n` +
-                        `У черзі ${workerStatus.stuckCount} заявок (найстаріша: ${workerStatus.oldestMinutes} хв)\n\n` +
-                        `<b>Запусти worker:</b>\n` +
-                        `<code>cd worker && python auto_apply.py</code>\n\n` +
-                        `Після запуску натисни кнопку ще раз.`
-                    );
-                    return;
-                }
-
-                // Get application with job info
-                const { data: app } = await supabase
-                    .from('applications')
-                    .select('*, jobs(id, title, company, external_apply_url, application_form_type)')
-                    .eq('id', appId)
-                    .eq('user_id', userId)
-                    .single();
-
-                if (!app || !app.jobs) {
-                    await sendTelegram(chatId, "❌ Заявку не знайдено.");
-                    return;
-                }
-
-                // Check if already sent (block duplicates)
-                if (app.status === 'sent' || app.status === 'sending') {
-                    await sendTelegram(chatId,
-                        `⚠️ <b>Заявку вже відправлено!</b>\n\n` +
-                        `📋 ${app.jobs.title}\n` +
-                        `🏢 ${app.jobs.company}\n\n` +
-                        `Повторна відправка заблокована.`
-                    );
-                    return;
-                }
-
-                // Update status to sending
-                await supabase.from('applications').update({ status: 'sending' }).eq('id', appId).eq('user_id', userId);
-
-                // Build informative message based on form type
-                const isRegistration = app.jobs.application_form_type === 'external_registration';
-                let domain = '';
-                try {
-                    domain = new URL(app.jobs.external_apply_url || '').hostname;
-                } catch { domain = 'зовнішній сайт'; }
-
-                let infoMsg = `🚀 <b>Auto-Apply запущено!</b>\n\n` +
-                    `📋 ${app.jobs.title}\n` +
-                    `🏢 ${app.jobs.company}\n` +
-                    `🌐 ${domain}\n\n`;
-
-                if (isRegistration) {
-                    infoMsg += `🔐 <b>Тип:</b> Потрібна реєстрація\n\n` +
-                        `Система перевірить чи є акаунт.\n` +
-                        `Якщо ні — зареєструється автоматично.\n` +
-                        `⚠️ <i>Можливо будуть запитання в цьому чаті!</i>\n\n`;
-                } else {
-                    infoMsg += `📝 <b>Тип:</b> Зовнішня форма\n\n` +
-                        `Skyvern заповнить та відправить форму.\n\n`;
-                }
-
-                infoMsg += `⏳ Обробка може зайняти 1-5 хвилин.\n` +
-                    `Переконайтесь що <code>auto_apply.py</code> запущений!`;
-
-                await sendTelegram(chatId, infoMsg);
+                await queueForAgentPipeline(supabase, appId, userId, chatId);
+                return;
             }
 
             // QUEUE FOR AGENT PIPELINE (external forms, Playwright, non-FINN)
@@ -1295,10 +1167,10 @@ async function runBackgroundJob(update: any) {
                     const jobTitle = (app as any)?.jobs?.title || 'Job';
                     const company = (app as any)?.jobs?.company || '';
 
-                    // Set back to sending
+                    // Set back to sending, routed to the agent pipeline
                     await supabase
                         .from('applications')
-                        .update({ status: 'sending', updated_at: new Date().toISOString() })
+                        .update({ status: 'sending', submission_method: 'agent', updated_at: new Date().toISOString() })
                         .eq('id', appId);
 
                     await sendTelegram(chatId,
