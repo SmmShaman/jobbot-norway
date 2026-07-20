@@ -545,7 +545,7 @@ export const api = {
   // Fill FINN Easy Apply form via Skyvern
   fillFinnForm: async (jobId: string, applicationId: string): Promise<{ success: boolean; message?: string; taskId?: string; workerWarning?: string }> => {
       try {
-          const response = await fetch(`https://ptrmidlhfdbybxmyovtm.supabase.co/functions/v1/finn-apply`, {
+          const response = await fetch(`https://db-jobbot.vitalii.no/functions/v1/finn-apply`, {
               method: 'POST',
               headers: {
                   'Content-Type': 'application/json',
@@ -569,7 +569,7 @@ export const api = {
   // Cancel a running Skyvern task and reset application to 'approved'
   cancelTask: async (applicationId: string): Promise<{ success: boolean; message?: string; taskId?: string }> => {
       try {
-          const response = await fetch(`https://ptrmidlhfdbybxmyovtm.supabase.co/functions/v1/cancel-task`, {
+          const response = await fetch(`https://db-jobbot.vitalii.no/functions/v1/cancel-task`, {
               method: 'POST',
               headers: {
                   'Content-Type': 'application/json',
@@ -911,7 +911,7 @@ export const api = {
               const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 min timeout
 
               const { data: { session } } = await supabase.auth.getSession();
-              const response = await fetch('https://ptrmidlhfdbybxmyovtm.supabase.co/functions/v1/scheduled-scanner', {
+              const response = await fetch('https://db-jobbot.vitalii.no/functions/v1/scheduled-scanner', {
                   method: 'POST',
                   headers: {
                       'Content-Type': 'application/json',

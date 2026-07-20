@@ -2,14 +2,14 @@
 import { createClient } from '@supabase/supabase-js';
 
 // Configuration - exported for direct API calls
-export const SUPABASE_URL = 'https://ptrmidlhfdbybxmyovtm.supabase.co';
+export const SUPABASE_URL = 'https://db-jobbot.vitalii.no';
 
 // ⚠️ UPDATE REQUIRED: Replace this with your 'anon' / 'public' key from Supabase Dashboard.
 // Project Settings -> API -> Project API keys -> anon public
-export const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB0cm1pZGxoZmRieWJ4bXlvdnRtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI0MzQ3NDksImV4cCI6MjA3ODAxMDc0OX0.rdOIJ9iMnbz5uxmGrtxJxb0n1cwf6ee3ppz414IaDWM';
+export const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjIwMDAwMDAwMDB9.4uAt57Hq0Sw9CqmqB64PkwdD1yhX8k7-c8R6DArZTls';
 
 // Storage key for session (same as supabase-js uses internally)
-export const STORAGE_KEY = `sb-ptrmidlhfdbybxmyovtm-auth-token`;
+export const STORAGE_KEY = `sb-db-jobbot-auth-token`;
 
 console.log('[Supabase] Initializing client...');
 console.log('[Supabase] URL:', SUPABASE_URL);
