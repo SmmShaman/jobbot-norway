@@ -143,6 +143,17 @@ pattern as the existing `formatFormType(job)` helper.
 verified or hit a blocker — see `skills/form-filling` gotchas) | `failed` |
 `rejected`.
 
+**Single-button flow (updated 2026-07-20):** the job card's only action is now
+"✅ Підтвердити" (`confirm_job_<jobId>`), replacing the old separate
+write/approve two-step. Clicking it calls `generate_application`, which
+inserts the row with `submission_method='agent'` already set — there is no
+manual approve gate in the normal path anymore. `draft`/`approved` still exist
+as states (and `approve_app_`/`queue_agent_` handlers still work) purely as a
+dormant manual-recovery path for rows that got stuck or need a human nudge;
+the confirm-button flow never stops there. The letter-writing poller
+(`skills/soknad-writing`) sends the finished Søknad as an FYI notice (no
+approve button) and advances the row straight to `sending`.
+
 ### Skyvern decommissioned — agent pipeline owns everything (updated 2026-07-20)
 
 Skyvern is fully decommissioned as of 2026-07-20. ALL submissions — external
@@ -156,8 +167,12 @@ not exist).
 should wake and fill a form for any `applications` row where
 `status = 'sending' AND submission_method = 'agent'`. Every code path that
 queues an application for submission now sets both fields together:
-- `queueForAgentPipeline()` in `telegram-bot/index.ts` — used by the
-  `auto_apply_`/`queue_agent_`/`retry_app_` button handlers (external forms).
+- `generate_application/index.ts` — the primary entry point now: sets
+  `submission_method='agent'` at row creation (`status='pending_manual'`),
+  triggered by the job card's single "✅ Підтвердити" (`confirm_job_`) button.
+- `queueForAgentPipeline()` in `telegram-bot/index.ts` — dormant-path fallback,
+  used by the `auto_apply_`/`queue_agent_`/`retry_app_` button handlers
+  (manual recovery for stuck rows, external forms).
 - `finn-apply/index.ts` — used by the FINN "Enkel Søknad" dashboard button;
   sets `status='sending', submission_method='agent'` directly (previously
   this function queued for the worker/Skyvern; now it queues for the agent
@@ -237,7 +252,7 @@ There are three distinct score thresholds in play — do not conflate them:
 3. **Track auto-mode eligibility** — per-track `min_score` in
    `track_policies` (60 for `nav_quota`, 70 for `career`) governs whether a
    job is eligible for auto-submit under `/automode`, and which button
-   (`write_app_*`) appears on its card. Independent of thresholds 1 and 2.
+   (`confirm_job_*`) appears on its card. Independent of thresholds 1 and 2.
 
 ## Auto mode (`/automode`)
 

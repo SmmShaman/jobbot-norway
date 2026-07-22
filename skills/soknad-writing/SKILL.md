@@ -11,11 +11,17 @@ re-copy it to `~/.claude/skills/soknad-writing/`.** Never edit the
 ## Why this exists
 
 `supabase/functions/generate_application/index.ts` makes **no LLM API call**.
-It only queues a row with `status='pending_manual'`. A polling task picks that
-row up and the Jobbot agent itself writes `cover_letter_no` (Norwegian) and
-`cover_letter_uk` (Ukrainian) by hand, then flips status to `draft`. This
-skill is the standard for that writing — not a prompt template for some other
-model, but the actual authoring guide for the agent.
+It only queues a row with `status='pending_manual', submission_method='agent'`
+(single-button "✅ Підтвердити" flow, updated 2026-07-20 — see
+`skills/application-pipeline`). A polling task picks that row up and the
+Jobbot agent itself writes `cover_letter_no` (Norwegian) and `cover_letter_uk`
+(Ukrainian) by hand, sends the finished letter to the user as a plain FYI
+notice (no approve button — there is no manual draft-approval gate in the
+normal flow anymore), then advances status straight to `sending` so the
+fill/submit poller picks it up next. Multiple queued rows are processed
+strictly one at a time, oldest first, with a "Заявка N з M" position in the
+FYI message. This skill is the standard for the writing itself — not a prompt
+template for some other model, but the actual authoring guide for the agent.
 
 ## Length and style standard
 

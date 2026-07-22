@@ -1,5 +1,5 @@
 
-const VERSION_STAMP = '2026-07-18-manual-agent-draft';
+const VERSION_STAMP = '2026-07-20-single-confirm-queue';
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
 
@@ -86,6 +86,7 @@ serve(async (req: Request) => {
         job_id,
         user_id,
         status: 'pending_manual',
+        submission_method: 'agent',
         created_at: new Date().toISOString(),
         prompt_source: 'pending:manual-agent',
         cost_usd: 0,

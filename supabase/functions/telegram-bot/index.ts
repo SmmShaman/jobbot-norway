@@ -307,19 +307,21 @@ async function runBackgroundJob(update: any) {
             const data = cb.data;
             const cbMessageId = cb.message?.message_id;
 
-            // WRITE APPLICATION
-            if (data.startsWith('write_app_')) {
-                // Remove buttons to prevent double-click
+            // CONFIRM JOB -- single-button entry point straight into the agent pipeline.
+            // No separate write/approve step: this creates (or reuses) the application,
+            // marked submission_method='agent' from the start (see generate_application),
+            // and queues it. The letter-writing poller sends the Søknad as an FYI, then the
+            // fill poller shows a pre-submit confirmation before actually sending it out --
+            // both of those steps still require the user to see things before an employer does.
+            if (data.startsWith('confirm_job_')) {
                 if (cbMessageId) await removeButtons(chatId, cbMessageId);
-                const jobId = data.split('write_app_')[1];
+                const jobId = data.split('confirm_job_')[1];
                 const userId = await getUserIdFromChat(supabase, chatId);
 
                 if (!userId) {
                     await sendTelegram(chatId, "⚠️ Telegram не прив'язаний до акаунту. Використайте /link CODE");
                     return;
                 }
-
-                await sendTelegram(chatId, "⏳ <b>Пишу Søknad...</b>\n(Це може зайняти до 30 сек)");
 
                 try {
                     const { data: genResult, error: invokeError } = await supabase.functions.invoke('generate_application', {
@@ -341,32 +343,27 @@ async function runBackgroundJob(update: any) {
 
                     const app = genResult.application;
 
-                    if (genResult.pending || (!app.cover_letter_no && !app.cover_letter_uk)) {
-                        await sendTelegram(chatId, "⏳ <b>Чернетку пише агент вручну</b> (без платного Claude API) — надішлю сюди, як буде готова (зазвичай кілька хвилин).");
-                        return;
-                    }
+                    // Queue position among this user's not-yet-sent applications (FIFO)
+                    const { count: queuePos } = await supabase
+                        .from('applications')
+                        .select('id', { count: 'exact', head: true })
+                        .eq('user_id', userId)
+                        .in('status', ['pending_manual', 'draft', 'approved', 'sending'])
+                        .lte('created_at', app.created_at);
 
-                    // Single language cover letter based on user preference
-                    const userLang = await getUserLanguage(supabase, userId);
-                    const maxLen = 1500;
-                    let cover: string;
-                    if (userLang === 'uk') {
-                        cover = app.cover_letter_uk || app.cover_letter_no || '';
-                    } else {
-                        cover = app.cover_letter_no || app.cover_letter_uk || '';
-                    }
-                    if (cover.length > maxLen) cover = cover.substring(0, maxLen) + '...';
+                    const { count: queueTotal } = await supabase
+                        .from('applications')
+                        .select('id', { count: 'exact', head: true })
+                        .eq('user_id', userId)
+                        .in('status', ['pending_manual', 'draft', 'approved', 'sending']);
 
-                    const msg = `✅ <b>Søknad готовий!</b>\n\n` +
-                                `<blockquote expandable>${cover}</blockquote>`;
+                    const posMsg = queueTotal && queueTotal > 1 ? `\n📬 Заявка ${queuePos} з ${queueTotal} у черзі.` : '';
 
-                    const kb = { inline_keyboard: [[
-                        { text: "✅ Підтвердити (Approve)", callback_data: `approve_app_${app.id}` }
-                    ]]};
-
-                    await sendTelegram(chatId, msg, kb);
+                    await sendTelegram(chatId,
+                        `✅ <b>Прийнято в чергу.</b>\nАгент напише Søknad і надішле сюди на перегляд ДО відправки роботодавцю, потім заповнить форму і покаже фінальне підтвердження перед сабмітом.${posMsg}`
+                    );
                 } catch (err: any) {
-                    console.error(`[TG] write_app_ exception:`, err);
+                    console.error(`[TG] confirm_job_ exception:`, err);
                     await sendTelegram(chatId, `❌ Виняток: ${err.message || 'Unknown error'}`);
                 }
             }
@@ -1935,7 +1932,7 @@ async function runBackgroundJob(update: any) {
                     if (!existingApp) {
                         statusMsg = "\n❌ <i>Søknad не створено</i>";
                         if (score >= 25) {
-                            buttons.push({ text: "✍️ Написати Søknad", callback_data: `write_app_${job.id}` });
+                            buttons.push({ text: "✅ Підтвердити", callback_data: `confirm_job_${job.id}` });
                         }
                     } else {
                         switch (existingApp.status) {
@@ -2408,7 +2405,7 @@ async function runBackgroundJob(update: any) {
 
                     if (!app) {
                         statusLine = '✍️ Потрібен Søknad';
-                        button = { text: '✍️ Написати Søknad', callback_data: `write_app_${job.id}` };
+                        button = { text: '✅ Підтвердити', callback_data: `confirm_job_${job.id}` };
                     } else if (app.status === 'draft') {
                         statusLine = '📝 Чернетка';
                         button = { text: '✅ Підтвердити', callback_data: `approve_app_${app.id}` };
@@ -3192,7 +3189,7 @@ async function processUrlPipeline(url: string, chatId: string, supabase: any, us
 
     if (!existingApp) {
         statusMsg = "❌ <b>Søknad не створено</b>";
-        buttons.push({ text: "✍️ Написати Søknad", callback_data: `write_app_${job.id}` });
+        buttons.push({ text: "✅ Підтвердити", callback_data: `confirm_job_${job.id}` });
     } else {
         switch (existingApp.status) {
             case 'draft':

@@ -533,17 +533,22 @@ async def send_job_card(
 
     msg += f"🔗 <a href=\"{job.get('job_url', '')}\">Переглянути вакансію</a>"
 
-    # Append auto-søknad if generated (single language, expandable blockquote)
+    # Append auto-søknad cover letter if one was already written (rare: generate_application
+    # only queues 'pending_manual' now, letters are written later by the agent, so this is
+    # normally empty at send time -- only show it if non-empty).
     if auto_app:
         if lang == 'uk':
             cover = (auto_app.get('cover_letter_uk') or auto_app.get('cover_letter_no') or '')[:1500]
         else:
             cover = (auto_app.get('cover_letter_no') or auto_app.get('cover_letter_uk') or '')[:1500]
-        msg += f"\n\n{'─' * 20}\n"
-        msg += f"✨ <b>Авто-Søknad:</b>\n"
-        msg += f"<blockquote expandable>{cover}</blockquote>"
+        if cover:
+            msg += f"\n\n{'─' * 20}\n"
+            msg += f"✨ <b>Авто-Søknad:</b>\n"
+            msg += f"<blockquote expandable>{cover}</blockquote>"
 
-    # Button logic
+    # Button logic -- single "✅ Підтвердити" entry point everywhere (2026-07-20), no separate
+    # write/approve step. If auto_app already exists it's already queued (submission_method='agent'
+    # set at creation by generate_application), so no button is needed at all.
     payload = {
         'chat_id': chat_id,
         'text': msg,
@@ -551,17 +556,13 @@ async def send_job_card(
         'disable_web_page_preview': True,
     }
     if auto_app:
-        # Auto-søknad generated → approve button
-        payload['reply_markup'] = {
-            "inline_keyboard": [[
-                {"text": "✅ Підтвердити", "callback_data": f"approve_app_{auto_app['id']}"}
-            ]]
-        }
+        msg += "\n\n🚀 <i>Вже в черзі на обробку.</i>"
+        payload['text'] = msg
     elif score >= track_min_score:
-        # No auto-søknad but relevant (per this job's track threshold) → write button
+        # Not queued yet but relevant (per this job's track threshold) → single confirm button
         payload['reply_markup'] = {
             "inline_keyboard": [[
-                {"text": "✍️ Написати Søknad", "callback_data": f"write_app_{job['id']}"}
+                {"text": "✅ Підтвердити", "callback_data": f"confirm_job_{job['id']}"}
             ]]
         }
 

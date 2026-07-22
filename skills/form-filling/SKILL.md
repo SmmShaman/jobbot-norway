@@ -81,10 +81,25 @@ form-filling mechanics — see `skills/application-pipeline/SKILL.md` for both.
 The trigger is: `applications.status = 'sending' AND applications.
 submission_method = 'agent'`. Every queuing path — external forms AND FINN
 Enkel Søknad alike — sets both fields together:
+- `supabase/functions/generate_application/index.ts` — the primary path since
+  2026-07-20: sets `submission_method='agent'` right at row creation
+  (`status='pending_manual'`), triggered by the job card's single "✅
+  Підтвердити" (`confirm_job_`) button. The letter-writing poller
+  (`skills/soknad-writing`) advances the row to `status='sending'` once the
+  Søknad is written and sent as an FYI — no manual draft-approval step in
+  between.
 - `queueForAgentPipeline()` in `supabase/functions/telegram-bot/index.ts`,
-  used by the `auto_apply_`/`queue_agent_`/`retry_app_` button handlers.
+  used by the `auto_apply_`/`queue_agent_`/`retry_app_` button handlers — a
+  dormant manual-recovery path, not part of the normal confirm-button flow.
 - `supabase/functions/finn-apply/index.ts`, used by the FINN "Enkel Søknad"
   dashboard button.
+
+**Process strictly one at a time, oldest first.** When several rows match the
+trigger, do not fill the next one until the current row has reached a
+terminal state (`sent`/`failed`/`manual_review`) or is sitting in an
+awaiting-confirmation state per phase 5 below. Report queue position in every
+message sent during this ("Заявка 2 з 5") — see `skills/application-pipeline`
+"Confirmation UX" for the exact convention.
 
 This same flag is what keeps the legacy Python worker
 (`worker/auto_apply.py`) from ever touching these rows — its
