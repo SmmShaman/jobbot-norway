@@ -23,6 +23,25 @@ strictly one at a time, oldest first, with a "Заявка N з M" position in t
 FYI message. This skill is the standard for the writing itself — not a prompt
 template for some other model, but the actual authoring guide for the agent.
 
+## User-editable master prompt (dashboard) — read BEFORE writing
+
+Before writing each letter, fetch the user's own prompt:
+`user_settings.application_prompt` for that user_id (self-hosted DB,
+db-jobbot.vitalii.no). If non-empty, that text — edited by the user in the
+job.vitalii.no dashboard Settings — is the **authoritative style and task
+directive** for the letter body. This skill still governs process mechanics
+(queueing, statuses, lengths, track styles, FYI messages), but where
+`application_prompt` and this skill disagree on tone/style/emphasis, **the
+user's dashboard prompt wins**.
+
+Hard honesty rule (2026-07-23, from Vitalii): never invent or intensify facts
+beyond what the CV profile literally states — no added "daily/щодня/hver
+dag", no inflated scope, no invented numbers. If the CV says "ansvarlig for
+produktanskaffelse", write exactly that responsibility, not "handles
+procurement every day". A plain true sentence beats an impressive
+embellished one — which is also what the dashboard prompt itself demands
+("ærlig, uten bullshit").
+
 ## Length and style standard
 
 - **Target length: 2500-3500 characters** of Norwegian body text. This is a
