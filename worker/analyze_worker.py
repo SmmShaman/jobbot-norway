@@ -28,14 +28,43 @@ load_dotenv()
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_SERVICE_KEY')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
-GROQ_MODEL = 'llama-3.3-70b-versatile'
-GROQ_FALLBACK_MODEL = 'llama-3.1-8b-instant'
+# Groq rate limits are per-model per-org, and this key is shared with the
+# vitalii.no publishing pipeline. llama-3.3-70b has a 100k TPD pool that both
+# projects were draining together, so job analysis lives on its own pools now.
+GROQ_MODEL = 'openai/gpt-oss-120b'
+GROQ_FALLBACK_MODEL = 'openai/gpt-oss-20b'
+GROQ_LAST_RESORT_MODEL = 'llama-3.1-8b-instant'
+# gpt-oss models reason before answering; without an explicit effort cap they
+# spend the whole completion budget on hidden reasoning and return empty text.
+GROQ_REASONING_EFFORT = 'low'
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_TECH_TOKEN = os.environ.get('TELEGRAM_TECH_BOT_TOKEN')
 
-# Pricing (Groq llama-3.3-70b-versatile)
-PRICE_INPUT = 0.59 / 1_000_000   # $0.59 per 1M tokens
-PRICE_OUTPUT = 0.79 / 1_000_000  # $0.79 per 1M tokens
+def build_groq_payload(model: str, system_message: str, user_message: str) -> dict:
+    """Groq chat payload. gpt-oss models need an explicit reasoning_effort or the
+    completion budget is consumed by hidden reasoning and content comes back empty."""
+    payload = {
+        'model': model,
+        'messages': [
+            {'role': 'system', 'content': system_message},
+            {'role': 'user', 'content': user_message},
+        ],
+        'temperature': 0.3,
+        'response_format': {'type': 'json_object'},
+    }
+    if model.startswith('openai/gpt-oss'):
+        payload['reasoning_effort'] = GROQ_REASONING_EFFORT
+    return payload
+
+# Pricing per 1M tokens (notional - we run on the free tier, this only feeds
+# the cost column in the dashboard).
+MODEL_PRICES = {
+    'openai/gpt-oss-120b': (0.15 / 1_000_000, 0.75 / 1_000_000),
+    'openai/gpt-oss-20b': (0.10 / 1_000_000, 0.50 / 1_000_000),
+    'llama-3.1-8b-instant': (0.05 / 1_000_000, 0.08 / 1_000_000),
+    'llama-3.3-70b-versatile': (0.59 / 1_000_000, 0.79 / 1_000_000),
+}
+PRICE_INPUT, PRICE_OUTPUT = MODEL_PRICES['openai/gpt-oss-120b']
 
 # Aura color mapping
 AURA_COLORS = {
@@ -363,6 +392,7 @@ Location: {job.get('location', 'Unknown')}
     models = [
         (GROQ_MODEL, 3),
         (GROQ_FALLBACK_MODEL, 2),
+        (GROQ_LAST_RESORT_MODEL, 2),
     ]
 
     for model, max_retries in models:
@@ -376,15 +406,7 @@ Location: {job.get('location', 'Unknown')}
                         'Content-Type': 'application/json',
                         'Authorization': f'Bearer {GROQ_API_KEY}'
                     },
-                    json={
-                        'model': model,
-                        'messages': [
-                            {'role': 'system', 'content': system_message},
-                            {'role': 'user', 'content': user_message}
-                        ],
-                        'temperature': 0.3,
-                        'response_format': {'type': 'json_object'}
-                    },
+                    json=build_groq_payload(model, system_message, user_message),
                     timeout=60.0
                 )
 
@@ -395,8 +417,8 @@ Location: {job.get('location', 'Unknown')}
                     continue
 
                 if response.status_code in (503, 429) and attempt >= max_retries:
-                    if model != GROQ_FALLBACK_MODEL:
-                        print(f"   🔄 {model} unavailable after {max_retries + 1} attempts, switching to {GROQ_FALLBACK_MODEL}...")
+                    if model != GROQ_LAST_RESORT_MODEL:
+                        print(f"   🔄 {model} unavailable after {max_retries + 1} attempts, falling back...")
                     break
 
                 if response.status_code != 200:
@@ -411,17 +433,14 @@ Location: {job.get('location', 'Unknown')}
                 tokens_in = usage.get('prompt_tokens', 0)
                 tokens_out = usage.get('completion_tokens', 0)
 
-                # Fallback model has different pricing
-                if model == GROQ_FALLBACK_MODEL:
-                    cost = (tokens_in * 0.05 / 1_000_000) + (tokens_out * 0.08 / 1_000_000)
-                else:
-                    cost = (tokens_in * PRICE_INPUT) + (tokens_out * PRICE_OUTPUT)
+                price_in, price_out = MODEL_PRICES.get(model, (PRICE_INPUT, PRICE_OUTPUT))
+                cost = (tokens_in * price_in) + (tokens_out * price_out)
 
                 aura = validate_aura(content.get('aura'))
                 radar = validate_radar(content.get('radar'))
 
                 used_model = model
-                if model == GROQ_FALLBACK_MODEL:
+                if model != GROQ_MODEL:
                     used_model = f"{model} (fallback)"
 
                 gated_score = apply_hard_requirement_gate(
@@ -456,8 +475,8 @@ Location: {job.get('location', 'Unknown')}
                     print(f"   ⏳ {model} timeout, retry {attempt + 1}/{max_retries} in {wait}s...")
                     await asyncio.sleep(wait)
                     continue
-                if model != GROQ_FALLBACK_MODEL:
-                    print(f"   🔄 {model} timeout after {max_retries + 1} attempts, switching to {GROQ_FALLBACK_MODEL}...")
+                if model != GROQ_LAST_RESORT_MODEL:
+                    print(f"   🔄 {model} timeout after {max_retries + 1} attempts, falling back...")
                 break
             except json.JSONDecodeError as e:
                 return {'success': False, 'error': f'JSON parse error: {e}'}
