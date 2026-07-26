@@ -1,121 +1,96 @@
-# JobBot Worker - Skyvern Integration
+# JobBot Worker
 
-Python workers for automated job application processing using Skyvern browser automation.
+> ## ⚠️ Skyvern is decommissioned (2026-07-20, commit `1235c80`)
+>
+> **This worker no longer fills or submits any application form — FINN or external.**
+> All submission is owned by the agent-driven Playwright pipeline; see
+> `skills/form-filling/SKILL.md` and `skills/application-pipeline/SKILL.md` in the repo
+> root, which are the source of truth for how applications are actually processed.
+>
+> Everything this README used to describe (Skyvern Docker, `SKYVERN_API_KEY`,
+> `auto_apply.py` as the form filler, `extract_apply_url.py` as "Stage 1") is **history**.
+> Do not start Skyvern, do not set its env vars, and do not treat the code below the
+> decommission guard as live logic.
 
-## Prerequisites
+Python support scripts for JobBot Norway: job analysis, LinkedIn scanning, and DB admin.
 
-1. **Python 3.8+**
-2. **Skyvern** running locally (Docker recommended)
-3. **Supabase** project with configured tables
+---
+
+## Live scripts
+
+### `analyze_worker.py` — job analysis (primary consumer of this directory)
+
+Scores scanned jobs against the user's CV profile via **Groq**
+(`openai/gpt-oss-120b` → `openai/gpt-oss-20b` → `llama-3.1-8b-instant`), classifies the
+`track` (`nav_quota` / `career`), applies the career seniority + language gates, sends
+Telegram job cards, and produces the evening digest. Normally runs from GitHub Actions
+(`.github/workflows/analyze-jobs.yml`, every 6h + dispatch).
+
+```bash
+python analyze_worker.py
+python analyze_worker.py --reanalyze-career-days 3   # re-score recent career jobs in place
+python analyze_worker.py --user <user_id>
+```
+
+### `linkedin_daemon.py` — LinkedIn scan
+
+Standalone LinkedIn scanner (uses `linkedin_scraper.py`). Runs once, e.g. after PC startup;
+notifies on start/finish via Telegram. Jobs it inserts are picked up by the `analyze-jobs`
+cron safety net rather than by `scheduled-scanner`.
+
+```bash
+python linkedin_daemon.py              # scan now
+python linkedin_daemon.py --delay 30   # wait 30 min, then scan
+```
+
+**LinkedIn policy:** never log into LinkedIn automatically and never use a stored session
+cookie for automated requests — permanent rule (account-ban risk). For `linkedin_easy_apply`
+jobs the correct path is the ATS-resolver cascade in `skills/form-filling` → "LinkedIn
+branch", not a login.
+
+### `db_admin.py` — direct SQL helper
+
+Ad-hoc queries/migrations against the self-hosted Supabase (`db-jobbot.vitalii.no`).
+
+---
+
+## Legacy / dead — do not treat as live
+
+| File | Status |
+|---|---|
+| `auto_apply.py` | **Dead.** `process_application()` has an early-return guard (~line 4943) routing every row back to `status='sending', submission_method='agent'`. Everything below it — the Skyvern task builder, LinkedIn/NAV URL extraction, navigation goals, `save_form_memory_with_skill` — is unreachable. `claim_applications()` also excludes `submission_method='agent'` rows (migration `20260719132000_agent_pipeline_claim_exclusion.sql`). Retained only as a second line of defense for stray pre-existing rows. |
+| `extract_apply_url.py` | **Dead.** Skyvern "Stage 1" URL-extraction daemon. |
+| `navigation_goals.py` | **Dead.** Site-specific Skyvern prompt text. The "look for Karriere/Ledige stillinger links" instructions here are *prompt strings for Skyvern*, not an implemented search step. |
+| `register_site.py` | **Legacy**, Skyvern-era site registration. Not extended. |
+| `auto_apply (2).py`, `worker.log`, `linkedin_scan.bat`, `forms/`, `supabase/` | Leftovers from the Skyvern era. |
+
+**If you are auditing this codebase for a missing feature:** conclusions drawn from these
+files are unreliable — the current pipeline's logic lives in `skills/*/SKILL.md`, not in
+Python. Check there first.
+
+---
 
 ## Setup
 
-### 1. Install Dependencies
-
 ```bash
 cd worker
-pip3 install -r requirements.txt
-```
-
-### 2. Start Skyvern (Docker)
-
-If Skyvern is not running:
-
-```bash
-# Using Docker Compose (recommended)
-docker compose up -d
-
-# Or using Skyvern CLI
-pip install skyvern
-skyvern quickstart
-```
-
-Verify Skyvern is running:
-- API: http://localhost:8000
-- UI: http://localhost:8080
-
-### 3. Get Skyvern API Key
-
-1. Open Skyvern UI: http://localhost:8080
-2. Navigate to **Settings** or **API Keys** section
-3. Generate or copy your API key
-4. Save it to your `.env` file
-
-### 4. Configure Environment
-
-```bash
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env` with your credentials:
+`.env` — required:
 
 ```env
-# Required - Supabase
-SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_URL=https://db-jobbot.vitalii.no
 SUPABASE_SERVICE_KEY=your-service-role-key
-
-# Required - Skyvern
-SKYVERN_API_URL=http://localhost:8000
-SKYVERN_API_KEY=your-skyvern-api-key
-
-# Required for FINN Enkel Søknad - Your FINN.no login
-FINN_EMAIL=your-finn-email@example.com
-FINN_PASSWORD=your-finn-password
-
-# Optional - Telegram notifications
-TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+GROQ_API_KEY=your-groq-key
+TELEGRAM_BOT_TOKEN=main-bot-token          # user-facing @soknad_bot
+TELEGRAM_TECH_BOT_TOKEN=tech-bot-token     # ops @vitalljobtechbot
 ```
 
-**Important:** Without `FINN_EMAIL` and `FINN_PASSWORD`, FINN Enkel Søknad auto-apply will not work!
+Obsolete — do **not** set: `SKYVERN_API_URL`, `SKYVERN_API_KEY`, `FINN_EMAIL`,
+`FINN_PASSWORD`, `LINKEDIN_EMAIL`, `LINKEDIN_PASSWORD`.
 
-## Scripts
-
-### `auto_apply.py` - Main Application Worker
-
-Monitors database for applications with `status: 'sending'` and uses Skyvern to fill out job application forms.
-
-```bash
-python3 auto_apply.py
-```
-
-Features:
-- Fetches user knowledge base and CV profile
-- Generates signed resume URLs
-- Sends tasks to Skyvern with form-filling instructions
-- Updates application status in database
-
-### `extract_apply_url.py` - URL Extractor
-
-Clicks on "Sok her" (FINN) or "Ga til soknad" (NAV) buttons to extract external application URLs.
-
-```bash
-# Single URL extraction
-python3 extract_apply_url.py "https://www.finn.no/job/fulltime/ad.html?finnkode=12345"
-
-# Daemon mode (listens for jobs in DB)
-python3 extract_apply_url.py --daemon
-```
-
-## Troubleshooting
-
-### "Invalid credentials" Error
-
-Make sure `SKYVERN_API_KEY` is set in your `.env` file. Get the key from Skyvern UI settings.
-
-### Connection Refused
-
-Ensure Skyvern Docker containers are running:
-
-```bash
-docker ps | grep skyvern
-```
-
-Expected containers:
-- `skyvern-1` (API on port 8000)
-- `skyvern-ui-1` (UI on port 8080)
-
-### Skyvern Task Fails
-
-1. Check Skyvern UI for task logs
-2. Verify the job URL is accessible
-3. Check if cookie popups need handling
+**Bot separation:** if `TELEGRAM_TECH_BOT_TOKEN` is unset, ops notifications must be
+*skipped*, never sent through the main user-facing bot.
