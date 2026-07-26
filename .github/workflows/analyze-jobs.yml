@@ -16,6 +16,13 @@ on:
   repository_dispatch:
     types: [analyze-jobs]
 
+  # Safety net: jobs inserted outside scheduled-scanner (linkedin_daemon.py) never
+  # fire a repository_dispatch, and scheduled-scan.yml only runs Mon-Fri — so NEW
+  # rows piled up unanalyzed over the weekend (68 of them, 24-26 Jul 2026).
+  # analyze_worker only touches rows with status != ANALYZED, so re-running is a no-op.
+  schedule:
+    - cron: '0 */6 * * *'
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
