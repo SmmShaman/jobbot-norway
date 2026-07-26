@@ -58,11 +58,23 @@ site, including FINN Enkel Søknad. Site-specific knowledge goes in
 4. **Screenshot + field→value list** — capture a downscaled screenshot of the
    fully-filled form (`assets/screenshot.mjs`), and separately produce a plain
    text list of every field name/label and the value that was entered into it.
-5. **Confirmation via tech-bot** — send the screenshot + field→value list to
-   the tech-bot with two buttons: "✅ Все вірно — відправляй" / "❌ Скасувати".
-   Reuse the existing `application_confirmations` DB table / confirm/cancel
-   button pattern already used in `telegram-bot/index.ts`
-   (`confirm_apply_*`/`cancel_apply_*`) rather than inventing a new one.
+5. **Confirmation via the main bot** — send the screenshot + field→value list
+   to the **main** bot (`TELEGRAM_BOT_TOKEN`, `@soknad_bot`) with two buttons:
+   "✅ Все вірно — відправляй" / "❌ Скасувати". Reuse the existing
+   `application_confirmations` DB table / confirm/cancel button pattern already
+   used in `telegram-bot/index.ts` (`confirm_apply_*`/`cancel_apply_*`) rather
+   than inventing a new one.
+   **Not the tech-bot.** Only the main bot's webhook points at
+   `/functions/v1/telegram-bot`, which is the sole place `callback_query` —
+   and therefore `confirm_apply_*` — is handled. `tech-bot/index.ts` reads
+   `update.message` only and has no `callback_query` branch at all, so an
+   inline button sent through it is dead on arrival: the row never reaches
+   `status='confirmed'` and the application hangs forever. The tech-bot is for
+   one-way notices ("🖐 ВРУЧНУ: …", errors, run summaries) — see
+   `skills/application-pipeline/SKILL.md` for the channel split.
+   `application_confirmations.expires_at` defaults to `now() + 5 minutes`, but
+   no function ever checks it — treat `status` as the only source of truth and
+   do not consider a confirmation stale because of that timestamp.
 6. **Re-run + submit** — on "✅", re-run the *same* fill script (cheap, a few
    seconds) so no browser session needs to stay open while the user
    deliberates, then click the real submit button this time.
