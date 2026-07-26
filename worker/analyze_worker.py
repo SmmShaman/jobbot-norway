@@ -780,7 +780,6 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
             print(f"\n👤 User {uid[:8]}... | {len(user_jobs)} jobs | lang={lang} ({lang_full_name}) | tg={'SET: ' + chat_id[:6] + '...' if chat_id else 'NOT SET'}{auto_label}")
 
             auto_soknad_count = 0
-            auto_soknad_cost = 0.0
             user_analyzed = 0
             user_cost = 0.0
             user_tokens_used = 0
@@ -832,7 +831,6 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                         if soknad_result.get('success') and soknad_result.get('application'):
                             auto_app = soknad_result['application']
                             auto_soknad_count += 1
-                            auto_soknad_cost += auto_app.get('cost_usd', 0) or 0
                         else:
                             err = soknad_result.get('message', 'Unknown error')
                             print(f"   ⚠️ Auto-søknad failed: {err}")
@@ -873,8 +871,7 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                 else:
                     summary = f"📋 <b>Авто-søknader:</b>\n"
                     summary += f"✅ Створено: {auto_soknad_count}\n"
-                    summary += f"📊 Поріг: ≥{min_score}%\n"
-                    summary += f"💰 Вартість: ${auto_soknad_cost:.4f}"
+                    summary += f"📊 Поріг: ≥{min_score}%"
                     try:
                         await client.post(
                             f"https://api.telegram.org/bot{TELEGRAM_TECH_TOKEN}/sendMessage",

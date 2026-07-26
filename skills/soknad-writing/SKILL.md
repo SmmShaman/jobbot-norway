@@ -69,7 +69,17 @@ embellished one — which is also what the dashboard prompt itself demands
 2. **Strongest relevant role(s)** — one paragraph per major relevant
    experience, each with: title, employer, concrete scope (team size,
    portfolio size, budget, whatever is quantifiable), and one lesson/insight
-   that shows judgment, not just duties performed.
+   that shows judgment, not just duties performed. **Role selection is
+   per-vacancy (confirmed by Vitalii, 2026-07-23)**: pick only the CV
+   entries that are actually relevant to *this specific* job ad — do not
+   force in every past role regardless of fit. The full CV profile (finance/
+   management history, teaching, and the technical/AI/software project work)
+   is confirmed accurate by Vitalii as-is ("в моєму профілі все максимально
+   те чим я займався") — trust it as ground truth, just choose which parts
+   are relevant to the ad at hand. Every role paragraph must include a
+   recency remark (roughly how long ago that role was, e.g. "for over fem
+   år siden", "i 2019-2020", "de siste to årene") so the reader can place it
+   in time — never present a role without signaling its distance from today.
 3. **Bridge to current situation** — if self-employed / between roles, frame
    it as active, ongoing, skill-building — not a gap.
 4. **Employment status & tense (binding)** — check the profile's
