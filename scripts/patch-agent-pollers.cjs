@@ -27,7 +27,34 @@
 
 const path = require('path');
 const fs = require('fs');
-const Database = require('better-sqlite3');
+
+// This script lives in the jobbot repo but drives the nanoclaw session DB, so
+// better-sqlite3 has to be resolved out of the nanoclaw checkout rather than
+// from next to this file.
+function loadDatabase() {
+  const roots = [
+    process.env.NANOCLAW_ROOT,
+    '/home/stuar/nanoclaw-v2',
+    process.cwd(),
+  ].filter(Boolean);
+  try {
+    return require('better-sqlite3');
+  } catch (_) {
+    /* fall through to the explicit roots below */
+  }
+  for (const root of roots) {
+    try {
+      return require(path.join(root, 'node_modules', 'better-sqlite3'));
+    } catch (_) {
+      /* try the next root */
+    }
+  }
+  throw new Error(
+    'better-sqlite3 not found — set NANOCLAW_ROOT to the nanoclaw checkout'
+  );
+}
+
+const Database = loadDatabase();
 
 // Agent + session are stable for the jobbot agent; override via env if it is recreated.
 const DB_PATH =
