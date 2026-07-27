@@ -92,7 +92,11 @@ STUCK_TIMEOUT_MINUTES = 30  # mark 'sending' applications as failed after this
 # Agent-driven rows (submission_method='agent') sit in 'sending' while the user
 # decides on the Telegram confirm button. Failing them at 30 min throws away a
 # form the agent already filled in and forces a full Playwright re-run.
-AGENT_STUCK_TIMEOUT_MINUTES = int(os.getenv("AGENT_STUCK_TIMEOUT_MINUTES", "360"))
+# Nothing is held open during that wait — the agent ends its turn after sending
+# the confirmation card and re-runs the fill script on approval (SKILL.md phase
+# 6) — and GATE v2 keeps the poller from waking on these rows, so the wait is
+# free. This is a housekeeping backstop, not a deadline for the user.
+AGENT_STUCK_TIMEOUT_MINUTES = int(os.getenv("AGENT_STUCK_TIMEOUT_MINUTES", "1440"))
 CLEANUP_EVERY_N_CYCLES = 30  # run cleanup every N poll cycles (~5 min at 10s interval)
 MAX_CONCURRENT_USERS = int(os.getenv("MAX_CONCURRENT_USERS", "3"))
 RETRY_ATTEMPTS = 3
