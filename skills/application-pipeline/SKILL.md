@@ -20,12 +20,20 @@ lives here now because it's process policy, not form mechanics.
 
 ## Two bots, two audiences (do not mix them up)
 
+The dividing line is **"does the user have to do something?"**, not "is it about
+their applications?" (tightened 2026-07-27 at the owner's instruction — an
+actionable card was getting buried under informational traffic).
+
 - **Main bot** (`@soknad_bot`, `telegram-bot` Edge Function, `TELEGRAM_BOT_TOKEN`)
-  — user-facing: job cards, approve/send buttons, `/scan`, `/report`,
-  `/automode`, `/navreport`, 2FA codes.
-- **Tech bot** (`@vitalljobtechbot`, `TELEGRAM_TECH_BOT_TOKEN`) — service/ops
-  info only: scan-progress notices, evening digest, worker heartbeat
-  warnings, analysis-run summaries. If `TELEGRAM_TECH_BOT_TOKEN` is unset, the
+  — **actionable only**: job cards with approve/send buttons, a question that
+  genuinely blocks work, 2FA codes, and replies to commands the user typed
+  (`/scan`, `/report`, `/automode`, `/navreport`). Nothing else.
+- **Tech bot** (`@vitalljobtechbot`, `TELEGRAM_TECH_BOT_TOKEN`) — **everything
+  informational**, including things about the user's own applications: cover
+  letter FYIs, submit receipts and screenshots, "🖐 ВРУЧНУ: …" hand-offs,
+  scan-progress notices, evening digest, worker heartbeat warnings,
+  analysis-run summaries. When in doubt, it goes here.
+  If `TELEGRAM_TECH_BOT_TOKEN` is unset, the
   correct behavior is to **skip that notification**, never fall back to
   sending it via the main bot — this fallback bug was the actual defect
   fixed in Part A (`analyze_worker.py`, `auto_apply.py`,

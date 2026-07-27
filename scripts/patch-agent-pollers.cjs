@@ -1,39 +1,34 @@
 /**
- * patch-agent-pollers.cjs — keep the Jobbot fill-queue poller in sync with the
- * form-filling policy.
+ * patch-agent-pollers.cjs — keep the two Jobbot pollers in sync with the
+ * form-filling policy and the Telegram channel split.
  *
  * HISTORY
  *
- * GATE v2 (2026-07-27, superseded) closed an "idle wake" leak: the gate woke the
- * agent on any row matching `applications.status='sending' AND
+ * GATE v2 (2026-07-27, superseded) closed an "idle wake" leak: the fill gate
+ * woke the agent on any row matching `applications.status='sending' AND
  * submission_method='agent'`, which is also the state a filled form sits in
- * while it waits for the user's Telegram confirm button. The agent woke every
- * 2 minutes only to answer "без змін", ~190k tokens a time — 8.1M measured
- * across 26–27.07. v2 subtracted applications holding a `pending`
- * `application_confirmations` row.
+ * while it waits for the user's confirm button. The agent woke every 2 minutes
+ * only to answer "без змін" — ~190k tokens a time, 8.1M across 26–27.07.
  *
- * GATE v3 (2026-07-27, current) follows the owner's decision to drop the
- * form-approval step entirely ("підтверджувати завжди"): the agent fills and
- * submits in one run, so nothing waits and there is nothing to subtract. The
- * anti-leak rule that survives is behavioural — end the turn without a single
- * database query when both queues are empty.
+ * GATE v3 (2026-07-27, superseded) followed the owner's decision to drop the
+ * form-approval step ("підтверджувати завжди"): fill and submit in one run, so
+ * nothing waits and there is nothing to subtract.
  *
- * What this script writes:
- *  1. Gate returns `sending_to_fill`, `confirmed_to_submit` (legacy buttons the
- *     user may still press) and a `legacy_awaiting_button` count that is
- *     reported but never suppresses a wake.
- *  2. Empty/failed curl responses default to `[]` instead of crashing the gate.
- *  3. Cadence stays at every 5 minutes.
- *  4. Prompt block overrides the old "ЧЕКАЙ на кнопку" instruction and repeats
- *     the end-the-turn-when-empty rule.
+ * ROUTING v4 (2026-07-27, current) applies the owner's second rule: @soknad_bot
+ * carries ONLY messages that need the user to do something. Everything
+ * informational — cover-letter FYIs, submit receipts, manual-apply hand-offs —
+ * moves to @vitalljobtechbot, so an actionable card can never be buried under
+ * a wall of notifications. This also strips the 2026-07-26 "куди слати
+ * підтвердження" block, which is still present on the pending_manual poller and
+ * still mandates the confirm/cancel buttons that no longer exist.
  *
  * USAGE (on the VPS):
  *   cd /home/stuar/nanoclaw-v2 && node /home/stuar/Projects/Jobbot-NO/scripts/patch-agent-pollers.cjs
  *
- * Idempotent: re-running detects the marker and skips. Any block this script
- * appended previously is stripped before the current one is added, so upgrading
- * v2 -> v3 does not leave contradictory instructions behind. A backup of every
- * row it touches is written next to the DB before anything changes.
+ * Idempotent per poller: a poller whose prompt already carries the marker is
+ * skipped. Blocks appended by earlier runs are stripped before the current one,
+ * and every text replacement is self-erasing, so upgrades never stack
+ * contradictory rules. A backup of each row is written next to the DB first.
  */
 
 const path = require('path');
@@ -67,40 +62,32 @@ function loadDatabase() {
 
 const Database = loadDatabase();
 
-// Agent + session are stable for the jobbot agent; override via env if it is recreated.
+// Agent + session are stable for the jobbot agent; override via env if recreated.
 const DB_PATH =
   process.env.JOBBOT_INBOUND_DB ||
   '/home/stuar/nanoclaw-v2/data/v2-sessions/ag-1784275710688-s87c7v/sess-1784275710698-esmwo9/inbound.db';
 
-// The poller that owns "fill the form / submit the confirmed one".
 const FILL_SERIES = process.env.JOBBOT_FILL_SERIES || 'task-1784787379628-6jph2g';
+const MANUAL_SERIES = process.env.JOBBOT_MANUAL_SERIES || 'task-1784787352236-wrt8oh';
 
-const MARKER = 'GATE v3.2 (2026-07-27)';
-const NEW_RECURRENCE = '*/5 * * * *';
+const MARKER = 'ROUTING v4 (2026-07-27)';
 
 // Appended blocks, oldest first. Everything from the first match onwards is cut
-// before the current block is added, so an upgrade never stacks contradictory
-// rules. The 2026-07-26 "куди слати підтвердження" block goes too: its channel
-// rule is restated below and in skills/form-filling/SKILL.md, while the rest of
-// it mandates the confirm/cancel buttons that no longer exist.
+// before the current block is added.
 const BLOCK_SENTINELS = [
   '\n\n📮 КУДИ СЛАТИ ПІДТВЕРДЖЕННЯ', // patch3-pollers.cjs, 2026-07-26
   '\n\n⏹ ЗАВЕРШУЙ ХІД ОДРАЗУ', // GATE v2
-  '\n\n⏹ АВТОСАБМІТ', // GATE v3
+  '\n\n⏹ АВТОСАБМІТ', // GATE v3 / ROUTING v4
 ];
 
-// Sentences in the ORIGINAL prompt body that contradict auto-submit. An override
-// block is not enough — a literal "ЧЕКАЙ на кнопку" left earlier in an 8k-char
-// prompt is exactly how the agent ends up waiting again. Each replacement is
-// self-erasing, so re-running is safe.
-const REPLACEMENTS = [
-  [
-    'і ЧЕКАЙ на явну кнопку підтвердження в Telegram. НІКОЛИ не сабміть без явного підтвердження.',
-    'і ОДРАЗУ натисни submit роботодавцю. Далі постав applications.status=\'sent\' і надішли той самий скріншот + список у ГОЛОВНИЙ бот як FYI БЕЗ кнопок — це квитанція, а не запит.',
-  ],
-];
+const ROUTING_RULE = `📵 МАРШРУТИЗАЦІЯ БОТІВ — ЧИННЕ ПРАВИЛО (${MARKER}). Скасовує будь-яку вимогу вище слати інформаційні повідомлення в головний бот.
 
-const NEW_SCRIPT = `#!/bin/bash
+- @soknad_bot (TELEGRAM_BOT_TOKEN) — ЛИШЕ те, що вимагає дії користувача: картка вакансії з кнопками, пряме питання, якого не обійти, 2FA-код. Нічого більше.
+- @vitalljobtechbot (TELEGRAM_TECH_BOT_TOKEN) — УСЕ інше: тексти листів, квитанції про відправлення, скріншоти, «🖐 ВРУЧНУ: …», помилки, підсумки прогонів, статуси.
+
+Причина: важлива картка з кнопкою губиться серед десятків інформаційних повідомлень. Якщо сумніваєшся, куди слати — це тех-бот. Якщо TELEGRAM_TECH_BOT_TOKEN не заданий, повідомлення треба ПРОПУСТИТИ, а не слати в головний бот.`;
+
+const FILL_SCRIPT = `#!/bin/bash
 set -a
 source /workspace/extra/jobbot/worker/.env
 set +a
@@ -127,11 +114,11 @@ console.log(JSON.stringify({
 "
 `;
 
-const PROMPT_BLOCK = `
+const FILL_BLOCK = `
 
 ⏹ АВТОСАБМІТ — ЧИННЕ ПРАВИЛО (${MARKER}). Скасовує будь-яку вимогу вище чекати на кнопку підтвердження вже заповненої форми і будь-яку заборону відправляти без такого підтвердження. Обидві скасовано власником 2026-07-27; кроку схвалення форми більше не існує.
 
-Для черги \`sending_to_fill\`: заповни форму → зроби скріншот і список «поле → значення» → **одразу натисни submit** → постав \`applications.status='sent'\` → надішли користувачу в ГОЛОВНИЙ бот (@soknad_bot) скріншот і список як FYI-повідомлення БЕЗ кнопок. Це квитанція, а не запит.
+Для черги \`sending_to_fill\`: заповни форму → зроби скріншот і список «поле → значення» → **одразу натисни submit** → постав \`applications.status='sent'\` → надішли скріншот і список у ТЕХНІЧНИЙ бот як квитанцію БЕЗ кнопок.
 
 НЕ створюй рядків у \`application_confirmations\`, НЕ надсилай інлайн-кнопок і НЕ чекай нічого. Користувач уже схвалив цю вакансію кнопкою «✅ Підтвердити» на картці — саме вона й створила цей рядок. Другого підтвердження не існує.
 
@@ -139,7 +126,66 @@ const PROMPT_BLOCK = `
 
 Якщо \`sending_to_fill\` і \`confirmed_to_submit\` порожні — заверши хід БЕЗ жодного curl/SQL «щоб перевірити» і без рядка «Без змін». Гейт уже зробив усі запити. Кожне таке пробудження коштує ~190k токенів; на них згоріло 8,1M за 26–27.07.
 
-Рядок у \`sending\` тепер завжди означає роботу в процесі або впалий прогін — ніколи не «людина думає». Не лишай заявку в цьому статусі: будь-яка помилка → \`manual_review\` зі скріншотом.`;
+Рядок у \`sending\` тепер завжди означає роботу в процесі або впалий прогін — ніколи не «людина думає». Не лишай заявку в цьому статусі: будь-яка помилка → \`manual_review\` зі скріншотом.
+
+${ROUTING_RULE}`;
+
+const MANUAL_BLOCK = `
+
+⏹ АВТОСАБМІТ І МАРШРУТИЗАЦІЯ (${MARKER}). Кроку схвалення заповненої форми більше не існує: коли заявка доходить до заповнення, агент відправляє її одразу, без кнопок і без очікування. Скасовано власником 2026-07-27 — не створюй рядків у \`application_confirmations\` і не надсилай інлайн-кнопок.
+
+${ROUTING_RULE}`;
+
+// Sentences in the prompt bodies that contradict the rules above. Each entry is
+// self-erasing; several variants of the same sentence are listed so the script
+// works on a fresh prompt and on one an earlier version already rewrote.
+const FILL_REPLACEMENTS = [
+  [
+    'і ЧЕКАЙ на явну кнопку підтвердження в Telegram. НІКОЛИ не сабміть без явного підтвердження.',
+    "і ОДРАЗУ натисни submit роботодавцю. Далі постав applications.status='sent' і надішли скріншот + список у ТЕХНІЧНИЙ бот як квитанцію БЕЗ кнопок.",
+  ],
+  [
+    'у ГОЛОВНИЙ бот як FYI БЕЗ кнопок — це квитанція, а не запит.',
+    'у ТЕХНІЧНИЙ бот як квитанцію БЕЗ кнопок.',
+  ],
+  [
+    'надішли користувачу в Telegram пряме посилання на вакансію + готовий текст листа для ручної подачі.',
+    'надішли в ТЕХНІЧНИЙ бот пряме посилання на вакансію + готовий текст листа для ручної подачі.',
+  ],
+];
+
+const MANUAL_REPLACEMENTS = [
+  [
+    'Надішли користувачу в Telegram FYI-повідомлення з текстом листа (обидві мови, коротко) — це лише інформаційне повідомлення, БЕЗ кнопки підтвердження (підтвердження вже відбулось раніше, на етапі pending_manual).',
+    'Надішли FYI з коротким текстом листа (NO+UK) у ТЕХНІЧНИЙ бот (TELEGRAM_TECH_BOT_TOKEN, @vitalljobtechbot). У головний бот @soknad_bot такі повідомлення НЕ йдуть.',
+  ],
+];
+
+const SHARED_REPLACEMENTS = [
+  [
+    'recon → мапа полів → заповнення через Playwright → скріншот → підтвердження в Telegram → submit.',
+    'recon → мапа полів → заповнення через Playwright → скріншот → submit → квитанція в тех-бот.',
+  ],
+];
+
+const POLLERS = [
+  {
+    name: 'fill queue',
+    series: FILL_SERIES,
+    script: FILL_SCRIPT,
+    recurrence: '*/5 * * * *',
+    block: FILL_BLOCK,
+    replacements: FILL_REPLACEMENTS.concat(SHARED_REPLACEMENTS),
+  },
+  {
+    name: 'pending_manual queue',
+    series: MANUAL_SERIES,
+    script: null, // gate is correct as-is: a pending_manual row is always real work
+    recurrence: null, // cadence unchanged
+    block: MANUAL_BLOCK,
+    replacements: MANUAL_REPLACEMENTS.concat(SHARED_REPLACEMENTS),
+  },
+];
 
 function stripGeneratedBlocks(prompt) {
   let out = prompt;
@@ -150,15 +196,73 @@ function stripGeneratedBlocks(prompt) {
   return out;
 }
 
-function applyReplacements(prompt) {
+function applyReplacements(prompt, replacements) {
   let out = prompt;
-  for (const [find, replace] of REPLACEMENTS) {
+  for (const [find, replace] of replacements) {
     if (out.includes(find)) {
       out = out.split(find).join(replace);
-      console.log(`  replaced    : "${find.slice(0, 48)}..."`);
+      console.log(`    replaced  : "${find.slice(0, 46)}…"`);
     }
   }
   return out;
+}
+
+function patchPoller(db, poller) {
+  const row = db
+    .prepare(
+      'select id, content, recurrence from messages_in where series_id = @s order by process_after desc limit 1'
+    )
+    .get({ s: poller.series });
+
+  if (!row) {
+    console.error(`  MISSING — no messages_in row for ${poller.series}`);
+    return false;
+  }
+
+  const content = JSON.parse(row.content);
+  if (content.prompt.includes(MARKER)) {
+    console.log(`  SKIP — ${poller.name} already at ${MARKER}`);
+    return true;
+  }
+
+  const backupPath = path.join(
+    path.dirname(DB_PATH),
+    `poller-backup-${poller.series}-${Date.now()}.json`
+  );
+  fs.writeFileSync(
+    backupPath,
+    JSON.stringify(
+      { id: row.id, series_id: poller.series, recurrence: row.recurrence, content: row.content },
+      null,
+      1
+    )
+  );
+
+  const beforeLen = content.prompt.length;
+  if (poller.script) content.script = poller.script;
+  content.prompt =
+    applyReplacements(stripGeneratedBlocks(content.prompt), poller.replacements) +
+    poller.block;
+
+  const update = db.transaction(() => {
+    db.prepare('update messages_in set content = @c where id = @id').run({
+      c: JSON.stringify(content),
+      id: row.id,
+    });
+    if (poller.recurrence) {
+      db.prepare(
+        'update messages_in set recurrence = @r where series_id = @s and recurrence is not null'
+      ).run({ r: poller.recurrence, s: poller.series });
+    }
+  });
+  update();
+
+  console.log(`  PATCHED ${poller.name} (row ${row.id})`);
+  console.log(`    prompt    : ${beforeLen} -> ${content.prompt.length} chars`);
+  if (poller.script) console.log(`    gate      : ${poller.script.length} chars`);
+  if (poller.recurrence) console.log(`    recurrence: ${row.recurrence} -> ${poller.recurrence}`);
+  console.log(`    backup    : ${backupPath}`);
+  return true;
 }
 
 function main() {
@@ -168,54 +272,12 @@ function main() {
   }
   const db = new Database(DB_PATH);
 
-  const row = db
-    .prepare(
-      'select id, content, recurrence from messages_in where series_id = @s order by process_after desc limit 1'
-    )
-    .get({ s: FILL_SERIES });
-
-  if (!row) {
-    console.error(`no messages_in row for series ${FILL_SERIES}`);
-    process.exit(1);
+  let ok = true;
+  for (const poller of POLLERS) {
+    console.log(`\n## ${poller.name} (${poller.series})`);
+    ok = patchPoller(db, poller) && ok;
   }
-
-  const content = JSON.parse(row.content);
-  if (content.script && content.script.includes(MARKER)) {
-    console.log(`SKIP — ${FILL_SERIES} already at ${MARKER}`);
-    return;
-  }
-
-  const backupPath = path.join(
-    path.dirname(DB_PATH),
-    `poller-backup-gate-v3-${Date.now()}.json`
-  );
-  fs.writeFileSync(
-    backupPath,
-    JSON.stringify({ id: row.id, series_id: FILL_SERIES, recurrence: row.recurrence, content: row.content }, null, 1)
-  );
-
-  const beforeLen = content.prompt.length;
-  content.script = NEW_SCRIPT;
-  content.prompt =
-    applyReplacements(stripGeneratedBlocks(content.prompt)) + PROMPT_BLOCK;
-
-  // Recurrence lives on every row of the series, so update them all.
-  const update = db.transaction(() => {
-    db.prepare('update messages_in set content = @c where id = @id').run({
-      c: JSON.stringify(content),
-      id: row.id,
-    });
-    db.prepare(
-      'update messages_in set recurrence = @r where series_id = @s and recurrence is not null'
-    ).run({ r: NEW_RECURRENCE, s: FILL_SERIES });
-  });
-  update();
-
-  console.log(`PATCHED ${FILL_SERIES} (row ${row.id}) -> ${MARKER}`);
-  console.log(`  gate script : ${NEW_SCRIPT.length} chars`);
-  console.log(`  prompt      : ${beforeLen} -> ${content.prompt.length} chars`);
-  console.log(`  recurrence  : ${row.recurrence} -> ${NEW_RECURRENCE}`);
-  console.log(`  backup      : ${backupPath}`);
+  if (!ok) process.exit(1);
 }
 
 main();

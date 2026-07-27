@@ -68,17 +68,18 @@ site, including FINN Enkel Søknad. Site-specific knowledge goes in
    row, do **not** send inline buttons, do **not** wait for anything.
 6. **Final screenshot + status update** — capture a downscaled screenshot
    confirming submission, set `applications.status = 'sent'`.
-7. **Tell the user after the fact** — send the **main** bot
-   (`TELEGRAM_BOT_TOKEN`, `@soknad_bot`) the post-submit screenshot plus the
-   field→value list from phase 4, as a plain FYI message **with no buttons**.
-   This is a receipt, not a request: state the employer, the role, and that the
+7. **Tell the user after the fact — in the tech bot.** Send the post-submit
+   screenshot plus the field→value list from phase 4 to
+   `TELEGRAM_TECH_BOT_TOKEN` (`@vitalljobtechbot`) **with no buttons**. This is
+   a receipt, not a request: state the employer, the role, and that the
    application has been sent.
-   **Channel split still applies.** The main bot is for anything addressed to
-   the user about their own applications; `tech-bot/index.ts` (`@vitalljobtechbot`)
-   is for one-way operational notices ("🖐 ВРУЧНУ: …", errors, run summaries) —
-   see `skills/application-pipeline/SKILL.md`. The tech-bot reads
-   `update.message` only and has no `callback_query` branch at all, so any
-   inline button sent through it is dead on arrival.
+   **Not the main bot.** As of 2026-07-27 `@soknad_bot` carries only messages
+   that need the user to act — job cards with buttons, blocking questions, 2FA
+   codes. Receipts, letters and hand-offs go to the tech bot so an actionable
+   card is never buried; see `skills/application-pipeline/SKILL.md` for the
+   full split. (The tech bot reads `update.message` only and has no
+   `callback_query` branch, so it can never carry a working button — which is
+   exactly why anything needing a button belongs in the main bot.)
 8. **Error handling** — on any failure (cover letter over the site's char
    limit, unexpected form step, missing selector, etc.), capture a screenshot
    and set `applications.status = 'manual_review'` rather than guessing or
