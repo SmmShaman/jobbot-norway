@@ -1,0 +1,25 @@
+{
+  "domain": "candidate.webcruiter.com",
+  "shareOfQueue": "23.1%",
+  "reconnedAt": "2026-07-27",
+  "strategy": "manual_review",
+  "requiresAccount": true,
+  "hasGuestApply": false,
+  "notes": "Recon 2026-07-27: the apply URL https://candidate.webcruiter.com/cv?advertid=<id> redirects to https://candidate.webcruiter.com/nb-no/Account/spalogin?ReturnUrl=… — the application form sits behind a candidate account and there is no guest path. Nothing on the landing page is fillable; the only inputs are the Cybot Cookiebot consent checkboxes. Account registration is NOT implemented (SKILL.md § Registration flow via IMAP is design-only, zero code written). DO NOT run recon or Playwright against this host — it burns a full recon budget and always ends at the same login wall. Route straight to manual_review.",
+  "agentAction": [
+    "Detect host candidate.webcruiter.com on the apply URL.",
+    "Do not launch a browser.",
+    "Make sure the cover letter (NO + UK) is written and stored on the application.",
+    "Set applications.status = 'manual_review'.",
+    "Send the tech bot a '🖐 ВРУЧНУ' notice with the direct advert link and the ready letter so the user can apply by hand."
+  ],
+  "cookieBanner": {
+    "vendor": "Cybot Cookiebot",
+    "acceptButtons": ["Tillat alle", "Godta alle", "Aksepter alle"]
+  },
+  "urlShape": {
+    "pattern": "https://candidate.webcruiter.com/cv?advertid=<advertid>&language=nb",
+    "note": "advertid is the stable per-posting id; link_source_id / utm_* are tracking noise and can be dropped."
+  },
+  "revisitWhen": "The IMAP registration flow from SKILL.md is actually built. At that point this profile becomes: register → verify email via IMAP → log in → fill, and a real fill.mjs can be written. Until then the negative result is the whole value of this file — it is worth ~6.8M tokens per avoided recon attempt."
+}

@@ -35,6 +35,19 @@ platform, ever**:
 from the host and is not. Working files for a single run may go in `/tmp`, but
 anything worth keeping is written here before the turn ends.
 
+`skills/form-filling/sites/*.json` in the repo is the **version-controlled seed**
+for these profiles — copy one into the runtime cache when it is missing there,
+and copy a newly written profile back into the repo when it is worth keeping.
+The runtime directory is what the agent reads at fill time.
+
+**A negative result is worth caching too.** `candidate.webcruiter.com` — 23.1%
+of the queue, the second-largest platform — turns out to be account-gated: the
+apply URL 302s to `/nb-no/Account/spalogin` and there is no guest path. Its
+profile carries `"strategy": "manual_review"` and `"requiresAccount": true`, so
+the agent routes those applications by hand **without launching a browser at
+all**. One recon, banked once, saves the full recon budget on every future
+webcruiter posting.
+
 The directory is keyed by the **form host**, not the employer:
 `candidate.webcruiter.com`, not `sykehuset-innlandet`. One script serves every
 company on that ATS — that is the whole point.
