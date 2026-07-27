@@ -75,14 +75,29 @@ const DB_PATH =
 // The poller that owns "fill the form / submit the confirmed one".
 const FILL_SERIES = process.env.JOBBOT_FILL_SERIES || 'task-1784787379628-6jph2g';
 
-const MARKER = 'GATE v3 (2026-07-27)';
+const MARKER = 'GATE v3.1 (2026-07-27)';
 const NEW_RECURRENCE = '*/5 * * * *';
 
-// Every block this script has ever appended starts with one of these. Stripping
-// them keeps an upgrade from stacking contradictory rules on top of each other.
+// Appended blocks, oldest first. Everything from the first match onwards is cut
+// before the current block is added, so an upgrade never stacks contradictory
+// rules. The 2026-07-26 "куди слати підтвердження" block goes too: its channel
+// rule is restated below and in skills/form-filling/SKILL.md, while the rest of
+// it mandates the confirm/cancel buttons that no longer exist.
 const BLOCK_SENTINELS = [
+  '\n\n📮 КУДИ СЛАТИ ПІДТВЕРДЖЕННЯ', // patch3-pollers.cjs, 2026-07-26
   '\n\n⏹ ЗАВЕРШУЙ ХІД ОДРАЗУ', // GATE v2
   '\n\n⏹ АВТОСАБМІТ', // GATE v3
+];
+
+// Sentences in the ORIGINAL prompt body that contradict auto-submit. An override
+// block is not enough — a literal "ЧЕКАЙ на кнопку" left earlier in an 8k-char
+// prompt is exactly how the agent ends up waiting again. Each replacement is
+// self-erasing, so re-running is safe.
+const REPLACEMENTS = [
+  [
+    'і ЧЕКАЙ на явну кнопку підтвердження в Telegram. НІКОЛИ не сабміть без явного підтвердження.',
+    'і ОДРАЗУ натисни submit роботодавцю. Далі постав applications.status=\'sent\' і надішли той самий скріншот + список у ГОЛОВНИЙ бот як FYI БЕЗ кнопок — це квитанція, а не запит.',
+  ],
 ];
 
 const NEW_SCRIPT = `#!/bin/bash
@@ -135,6 +150,17 @@ function stripGeneratedBlocks(prompt) {
   return out;
 }
 
+function applyReplacements(prompt) {
+  let out = prompt;
+  for (const [find, replace] of REPLACEMENTS) {
+    if (out.includes(find)) {
+      out = out.split(find).join(replace);
+      console.log(`  replaced    : "${find.slice(0, 48)}..."`);
+    }
+  }
+  return out;
+}
+
 function main() {
   if (!fs.existsSync(DB_PATH)) {
     console.error(`inbound.db not found: ${DB_PATH}`);
@@ -170,7 +196,8 @@ function main() {
 
   const beforeLen = content.prompt.length;
   content.script = NEW_SCRIPT;
-  content.prompt = stripGeneratedBlocks(content.prompt) + PROMPT_BLOCK;
+  content.prompt =
+    applyReplacements(stripGeneratedBlocks(content.prompt)) + PROMPT_BLOCK;
 
   // Recurrence lives on every row of the series, so update them all.
   const update = db.transaction(() => {
