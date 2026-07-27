@@ -75,7 +75,7 @@ const DB_PATH =
 // The poller that owns "fill the form / submit the confirmed one".
 const FILL_SERIES = process.env.JOBBOT_FILL_SERIES || 'task-1784787379628-6jph2g';
 
-const MARKER = 'GATE v3.1 (2026-07-27)';
+const MARKER = 'GATE v3.2 (2026-07-27)';
 const NEW_RECURRENCE = '*/5 * * * *';
 
 // Appended blocks, oldest first. Everything from the first match onwards is cut
@@ -129,7 +129,7 @@ console.log(JSON.stringify({
 
 const PROMPT_BLOCK = `
 
-⏹ АВТОСАБМІТ — ЧИННЕ ПРАВИЛО (${MARKER}). ПЕРЕКРИВАЄ будь-яку вимогу вище чекати кнопку підтвердження форми, зокрема «ЧЕКАЙ на явну кнопку підтвердження в Telegram» і «НІКОЛИ не сабміть без явного підтвердження» — ці рядки скасовано власником 2026-07-27.
+⏹ АВТОСАБМІТ — ЧИННЕ ПРАВИЛО (${MARKER}). Скасовує будь-яку вимогу вище чекати на кнопку підтвердження вже заповненої форми і будь-яку заборону відправляти без такого підтвердження. Обидві скасовано власником 2026-07-27; кроку схвалення форми більше не існує.
 
 Для черги \`sending_to_fill\`: заповни форму → зроби скріншот і список «поле → значення» → **одразу натисни submit** → постав \`applications.status='sent'\` → надішли користувачу в ГОЛОВНИЙ бот (@soknad_bot) скріншот і список як FYI-повідомлення БЕЗ кнопок. Це квитанція, а не запит.
 
