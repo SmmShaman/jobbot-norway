@@ -1,28 +1,39 @@
 /**
- * patch-agent-pollers.cjs — close the "idle wake" leak in the Jobbot agent poller.
+ * patch-agent-pollers.cjs — keep the Jobbot fill-queue poller in sync with the
+ * form-filling policy.
  *
- * PROBLEM (measured 2026-07-27)
- * The fill-queue poller woke the agent whenever ANY row matched
- * `applications.status='sending' AND submission_method='agent'`. A form the agent
- * has already filled stays in exactly that state while it waits for the user to
- * press the Telegram confirm button, so the gate kept firing every 2 minutes and
- * the agent woke up only to answer "без змін". Each of those no-op wakes cost
- * ~190k tokens (the whole session context is re-read). Measured waste: 2.86M
- * tokens on 27.07 between 06:28 and 06:56, and 5.28M more on 26.07.
+ * HISTORY
  *
- * FIX
- *  1. The gate subtracts applications that have an open `application_confirmations`
- *     row with status='pending' — those are blocked on a human, not on the agent.
+ * GATE v2 (2026-07-27, superseded) closed an "idle wake" leak: the gate woke the
+ * agent on any row matching `applications.status='sending' AND
+ * submission_method='agent'`, which is also the state a filled form sits in
+ * while it waits for the user's Telegram confirm button. The agent woke every
+ * 2 minutes only to answer "без змін", ~190k tokens a time — 8.1M measured
+ * across 26–27.07. v2 subtracted applications holding a `pending`
+ * `application_confirmations` row.
+ *
+ * GATE v3 (2026-07-27, current) follows the owner's decision to drop the
+ * form-approval step entirely ("підтверджувати завжди"): the agent fills and
+ * submits in one run, so nothing waits and there is nothing to subtract. The
+ * anti-leak rule that survives is behavioural — end the turn without a single
+ * database query when both queues are empty.
+ *
+ * What this script writes:
+ *  1. Gate returns `sending_to_fill`, `confirmed_to_submit` (legacy buttons the
+ *     user may still press) and a `legacy_awaiting_button` count that is
+ *     reported but never suppresses a wake.
  *  2. Empty/failed curl responses default to `[]` instead of crashing the gate.
- *  3. The fill poller drops from every 2 minutes to every 5.
- *  4. The prompt tells the agent to end the turn immediately when both queues are
- *     empty, instead of re-querying the database to confirm.
+ *  3. Cadence stays at every 5 minutes.
+ *  4. Prompt block overrides the old "ЧЕКАЙ на кнопку" instruction and repeats
+ *     the end-the-turn-when-empty rule.
  *
- * USAGE (on the VPS, from the nanoclaw checkout so better-sqlite3 resolves):
+ * USAGE (on the VPS):
  *   cd /home/stuar/nanoclaw-v2 && node /home/stuar/Projects/Jobbot-NO/scripts/patch-agent-pollers.cjs
  *
- * Idempotent: re-running detects the marker and skips. Writes a backup of every
- * row it touches next to the DB before changing anything.
+ * Idempotent: re-running detects the marker and skips. Any block this script
+ * appended previously is stripped before the current one is added, so upgrading
+ * v2 -> v3 does not leave contradictory instructions behind. A backup of every
+ * row it touches is written next to the DB before anything changes.
  */
 
 const path = require('path');
@@ -64,15 +75,22 @@ const DB_PATH =
 // The poller that owns "fill the form / submit the confirmed one".
 const FILL_SERIES = process.env.JOBBOT_FILL_SERIES || 'task-1784787379628-6jph2g';
 
-const MARKER = 'GATE v2 (2026-07-27)';
+const MARKER = 'GATE v3 (2026-07-27)';
 const NEW_RECURRENCE = '*/5 * * * *';
+
+// Every block this script has ever appended starts with one of these. Stripping
+// them keeps an upgrade from stacking contradictory rules on top of each other.
+const BLOCK_SENTINELS = [
+  '\n\n⏹ ЗАВЕРШУЙ ХІД ОДРАЗУ', // GATE v2
+  '\n\n⏹ АВТОСАБМІТ', // GATE v3
+];
 
 const NEW_SCRIPT = `#!/bin/bash
 set -a
 source /workspace/extra/jobbot/worker/.env
 set +a
-# ${MARKER}: never wake the agent for a form that is already filled and waiting
-# on the user's Telegram button. Those rows sit in status='sending' by design.
+# ${MARKER}: the agent fills and submits in one run, so a row in 'sending' is
+# always real work. Legacy pending confirmations are counted, never subtracted.
 AUTH=(-H "apikey: \${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer \${SUPABASE_SERVICE_KEY}")
 Q1=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id&status=eq.sending&submission_method=eq.agent" "\${AUTH[@]}")
 Q2=$(curl -s "\${SUPABASE_URL}/rest/v1/application_confirmations?select=id&status=eq.confirmed&submitted_at=is.null" "\${AUTH[@]}")
@@ -82,30 +100,40 @@ case "$Q1" in ""|"null") Q1="[]";; esac
 case "$Q2" in ""|"null") Q2="[]";; esac
 case "$Q3" in ""|"null") Q3="[]";; esac
 node -e "
-const q1 = $Q1;
-const q2 = $Q2;
-const q3 = $Q3;
-const awaitingUser = new Set((Array.isArray(q3) ? q3 : []).map(r => r.application_id));
-const toFill = (Array.isArray(q1) ? q1 : []).filter(a => !awaitingUser.has(a.id));
-const toSubmit = Array.isArray(q2) ? q2 : [];
+const arr = v => (Array.isArray(v) ? v : []);
+const toFill = arr($Q1);
+const toSubmit = arr($Q2);
+const legacy = new Set(arr($Q3).map(r => r.application_id));
 const wake = toFill.length > 0 || toSubmit.length > 0;
 console.log(JSON.stringify({
   wakeAgent: wake,
-  data: { sending_to_fill: toFill, confirmed_to_submit: toSubmit, awaiting_user_button: awaitingUser.size }
+  data: { sending_to_fill: toFill, confirmed_to_submit: toSubmit, legacy_awaiting_button: legacy.size }
 }));
 "
 `;
 
 const PROMPT_BLOCK = `
 
-⏹ ЗАВЕРШУЙ ХІД ОДРАЗУ, ЯКЩО ЧЕРГИ ПОРОЖНІ (${MARKER}). Гейт-скрипт уже зробив усі потрібні запити до бази й передав тобі результат у data:
-- \`sending_to_fill\` — заявки, для яких форму ТРЕБА заповнити;
-- \`confirmed_to_submit\` — підтверджені заявки, які треба фактично відправити;
-- \`awaiting_user_button\` — лише лічильник заявок, що чекають натискання кнопки користувачем.
+⏹ АВТОСАБМІТ — ЧИННЕ ПРАВИЛО (${MARKER}). ПЕРЕКРИВАЄ будь-яку вимогу вище чекати кнопку підтвердження форми, зокрема «ЧЕКАЙ на явну кнопку підтвердження в Telegram» і «НІКОЛИ не сабміть без явного підтвердження» — ці рядки скасовано власником 2026-07-27.
 
-Якщо \`sending_to_fill\` і \`confirmed_to_submit\` порожні — НЕ роби жодного curl/SQL «щоб перевірити», НЕ пиши «Без змін» і НЕ переказуй стан черги. Просто заверши хід без дій. Кожне таке пробудження коштує ~190k токенів, і у 26–27.07 на них згоріло 8,1M.
+Для черги \`sending_to_fill\`: заповни форму → зроби скріншот і список «поле → значення» → **одразу натисни submit** → постав \`applications.status='sent'\` → надішли користувачу в ГОЛОВНИЙ бот (@soknad_bot) скріншот і список як FYI-повідомлення БЕЗ кнопок. Це квитанція, а не запит.
 
-Заявка з \`awaiting_user_button\` — НЕ твоя робота: форма вже заповнена, підтвердження створене, чекаємо людину. Не перезаповнюй її, не створюй друге підтвердження і не чіпай її статус. Воркер більше не вбиває такі рядки через 30 хвилин (тепер 6 годин), тож поспішати нікуди.`;
+НЕ створюй рядків у \`application_confirmations\`, НЕ надсилай інлайн-кнопок і НЕ чекай нічого. Користувач уже схвалив цю вакансію кнопкою «✅ Підтвердити» на картці — саме вона й створила цей рядок. Другого підтвердження не існує.
+
+Черга \`confirmed_to_submit\` — це старі підтвердження (до 2026-07-27), картки яких ще живі. Якщо користувач натисне таку кнопку, перезапусти скрипт заповнення і відправ. Поле \`legacy_awaiting_button\` — лише лічильник для видимості, на нього не реагуй.
+
+Якщо \`sending_to_fill\` і \`confirmed_to_submit\` порожні — заверши хід БЕЗ жодного curl/SQL «щоб перевірити» і без рядка «Без змін». Гейт уже зробив усі запити. Кожне таке пробудження коштує ~190k токенів; на них згоріло 8,1M за 26–27.07.
+
+Рядок у \`sending\` тепер завжди означає роботу в процесі або впалий прогін — ніколи не «людина думає». Не лишай заявку в цьому статусі: будь-яка помилка → \`manual_review\` зі скріншотом.`;
+
+function stripGeneratedBlocks(prompt) {
+  let out = prompt;
+  for (const sentinel of BLOCK_SENTINELS) {
+    const i = out.indexOf(sentinel);
+    if (i !== -1) out = out.slice(0, i);
+  }
+  return out;
+}
 
 function main() {
   if (!fs.existsSync(DB_PATH)) {
@@ -127,21 +155,22 @@ function main() {
 
   const content = JSON.parse(row.content);
   if (content.script && content.script.includes(MARKER)) {
-    console.log(`SKIP — ${FILL_SERIES} already patched`);
+    console.log(`SKIP — ${FILL_SERIES} already at ${MARKER}`);
     return;
   }
 
   const backupPath = path.join(
     path.dirname(DB_PATH),
-    `poller-backup-gate-v2-${Date.now()}.json`
+    `poller-backup-gate-v3-${Date.now()}.json`
   );
   fs.writeFileSync(
     backupPath,
     JSON.stringify({ id: row.id, series_id: FILL_SERIES, recurrence: row.recurrence, content: row.content }, null, 1)
   );
 
+  const beforeLen = content.prompt.length;
   content.script = NEW_SCRIPT;
-  if (!content.prompt.includes(MARKER)) content.prompt += PROMPT_BLOCK;
+  content.prompt = stripGeneratedBlocks(content.prompt) + PROMPT_BLOCK;
 
   // Recurrence lives on every row of the series, so update them all.
   const update = db.transaction(() => {
@@ -150,14 +179,14 @@ function main() {
       id: row.id,
     });
     db.prepare(
-      "update messages_in set recurrence = @r where series_id = @s and recurrence is not null"
+      'update messages_in set recurrence = @r where series_id = @s and recurrence is not null'
     ).run({ r: NEW_RECURRENCE, s: FILL_SERIES });
   });
   update();
 
-  console.log(`PATCHED ${FILL_SERIES} (row ${row.id})`);
+  console.log(`PATCHED ${FILL_SERIES} (row ${row.id}) -> ${MARKER}`);
   console.log(`  gate script : ${NEW_SCRIPT.length} chars`);
-  console.log(`  prompt      : ${content.prompt.length} chars`);
+  console.log(`  prompt      : ${beforeLen} -> ${content.prompt.length} chars`);
   console.log(`  recurrence  : ${row.recurrence} -> ${NEW_RECURRENCE}`);
   console.log(`  backup      : ${backupPath}`);
 }

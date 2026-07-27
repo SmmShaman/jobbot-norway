@@ -49,41 +49,48 @@ site, including FINN Enkel Søknad. Site-specific knowledge goes in
    stable, human-meaningful anchor. Map fields by their label first, and only
    fall back to structural selectors (`input[name^="text_"]`, "the input
    nearest this label") when no stable name/id exists.
-3. **Fill — do NOT submit.** Fill every field: personal info, CV upload
+3. **Fill.** Fill every field: personal info, CV upload
    (`assets/file-upload.mjs`), custom per-job questions, cover letter
    (`assets/text-fields.mjs` — check char limit BEFORE inserting, some fields
    are contenteditable divs, not real `<textarea>`s), phone number
-   (`assets/phone-input.mjs` if the site has a masked phone widget). Locate but
-   do not click the final submit button.
+   (`assets/phone-input.mjs` if the site has a masked phone widget).
 4. **Screenshot + field→value list** — capture a downscaled screenshot of the
    fully-filled form (`assets/screenshot.mjs`), and separately produce a plain
    text list of every field name/label and the value that was entered into it.
-5. **Confirmation via the main bot** — send the screenshot + field→value list
-   to the **main** bot (`TELEGRAM_BOT_TOKEN`, `@soknad_bot`) with two buttons:
-   "✅ Все вірно — відправляй" / "❌ Скасувати". Reuse the existing
-   `application_confirmations` DB table / confirm/cancel button pattern already
-   used in `telegram-bot/index.ts` (`confirm_apply_*`/`cancel_apply_*`) rather
-   than inventing a new one.
-   **Not the tech-bot.** Only the main bot's webhook points at
-   `/functions/v1/telegram-bot`, which is the sole place `callback_query` —
-   and therefore `confirm_apply_*` — is handled. `tech-bot/index.ts` reads
-   `update.message` only and has no `callback_query` branch at all, so an
-   inline button sent through it is dead on arrival: the row never reaches
-   `status='confirmed'` and the application hangs forever. The tech-bot is for
-   one-way notices ("🖐 ВРУЧНУ: …", errors, run summaries) — see
-   `skills/application-pipeline/SKILL.md` for the channel split.
-   `application_confirmations.expires_at` defaults to `now() + 5 minutes`, but
-   no function ever checks it — treat `status` as the only source of truth and
-   do not consider a confirmation stale because of that timestamp.
-6. **Re-run + submit** — on "✅", re-run the *same* fill script (cheap, a few
-   seconds) so no browser session needs to stay open while the user
-   deliberates, then click the real submit button this time.
-7. **Final screenshot + status update** — capture a downscaled screenshot
+   Do this *before* submitting: it is the record of what was sent.
+5. **Submit — do not ask first.** Click the real submit button in the same run.
+   **There is no form-approval step.** The user already approved this specific
+   job when they pressed "✅ Підтвердити" on the job card — that button is what
+   created this row in the first place (see the wake contract below). Asking a
+   second time for the filled form was removed on 2026-07-27 at the owner's
+   explicit instruction ("підтверджувати завжди"), because the wait bought no
+   safety and cost real money. Do **not** create an `application_confirmations`
+   row, do **not** send inline buttons, do **not** wait for anything.
+6. **Final screenshot + status update** — capture a downscaled screenshot
    confirming submission, set `applications.status = 'sent'`.
+7. **Tell the user after the fact** — send the **main** bot
+   (`TELEGRAM_BOT_TOKEN`, `@soknad_bot`) the post-submit screenshot plus the
+   field→value list from phase 4, as a plain FYI message **with no buttons**.
+   This is a receipt, not a request: state the employer, the role, and that the
+   application has been sent.
+   **Channel split still applies.** The main bot is for anything addressed to
+   the user about their own applications; `tech-bot/index.ts` (`@vitalljobtechbot`)
+   is for one-way operational notices ("🖐 ВРУЧНУ: …", errors, run summaries) —
+   see `skills/application-pipeline/SKILL.md`. The tech-bot reads
+   `update.message` only and has no `callback_query` branch at all, so any
+   inline button sent through it is dead on arrival.
 8. **Error handling** — on any failure (cover letter over the site's char
    limit, unexpected form step, missing selector, etc.), capture a screenshot
    and set `applications.status = 'manual_review'` rather than guessing or
-   retrying blindly.
+   retrying blindly. Never leave a row sitting in `sending`: with no human step
+   left, a row in `sending` means work in progress, and anything still there
+   after `AGENT_STUCK_TIMEOUT_MINUTES` is swept into `failed` by the worker.
+
+**Legacy confirmations.** `application_confirmations` rows created before
+2026-07-27 may still be `pending` with live Telegram cards. If the user presses
+one, the row flips to `confirmed` and reaches the agent through the
+`confirmed_to_submit` queue — honour it by re-running the fill script and
+submitting. Do not create new rows in that table.
 
 Employer blacklist and relevance-score thresholds are process policy, not
 form-filling mechanics — see `skills/application-pipeline/SKILL.md` for both.
@@ -129,25 +136,24 @@ exists. On wake: pick up the row, run phases 1-8 above, and on success set
 not touch `submission_method` after that, it's a historical marker, not a
 live state field.
 
-**A row awaiting the user's confirm button is not work — never treat it as
-such.** Between phase 5 and phase 6 the row stays at `status='sending'` with an
-`application_confirmations` row at `status='pending'`, sometimes for hours. That
-matches the raw trigger above, so the gate script explicitly subtracts those
-applications (`GATE v2`, 2026-07-27 — see `scripts/patch-agent-pollers.cjs`) and
-hands the agent three fields: `sending_to_fill`, `confirmed_to_submit`, and a
-plain `awaiting_user_button` count. **When the first two are empty, end the turn
-without a single database query** — no "let me verify the queue", no "без змін"
-status line. Before this gate existed the poller woke the agent every 2 minutes
-against a form that was merely waiting on a human, and each no-op wake re-read
-the whole session context for ~190k tokens (8.1M measured across 26–27.07).
+**End the turn immediately when the queues are empty.** The gate script
+(`GATE v3`, 2026-07-27 — see `scripts/patch-agent-pollers.cjs`) has already run
+every query you would run, and hands you three fields: `sending_to_fill`,
+`confirmed_to_submit`, and a `legacy_awaiting_button` count. When the first two
+are empty, stop — **no confirming `curl`, no "let me verify the queue", no "без
+змін" status line.** Each such wake re-reads the whole session context for
+~190k tokens; 8.1M went that way across 26–27.07 before this rule existed.
 
-The matching worker-side rule lives in `worker/auto_apply.py`:
-`cleanup_stuck_applications()` uses `AGENT_STUCK_TIMEOUT_MINUTES` (default 6h)
-for `submission_method='agent'` rows instead of the 30-minute legacy timeout.
-The old 30-minute sweep destroyed filled-in forms mid-wait and forced a full
-Playwright re-run — on 27.07 the Neat/Teamtailor form was filled twice for
-exactly this reason. Do not lower it back without also removing the
-wait-for-button step.
+Since phase 5 submits in the same run, a row at `status='sending'` now always
+means work in progress or a crashed run — never a human deliberating. That is
+why `worker/auto_apply.py` sweeps agent rows into `failed` after
+`AGENT_STUCK_TIMEOUT_MINUTES` (default 120, env-overridable), well above a
+normal fill but low enough that a dead run does not linger. The legacy
+30-minute sweep applies only to non-agent rows.
+
+`legacy_awaiting_button` counts pre-2026-07-27 confirmations still sitting at
+`status='pending'`. It is reported for visibility only — it never suppresses a
+wake, and you should not act on it.
 
 **Skyvern is gone — there is no fallback path.** `FALLBACK_TO_SKYVERN_WORKER`
 has been removed entirely from `telegram-bot/index.ts`, and

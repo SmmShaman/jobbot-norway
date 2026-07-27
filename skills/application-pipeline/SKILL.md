@@ -199,8 +199,14 @@ queued this way should be expected to land in `manual_review` rather than
 ## Confirmation UX (added 2026-07-19)
 
 Applies to every confirmation prompt sent to the user or tech-bot during the
-agent pipeline (form-fill confirmations per `skills/form-filling` phase 5, and
-any manual-review/hidden-requirement check-ins).
+agent pipeline: manual-review escalations, hidden-requirement check-ins, and
+any other question that genuinely needs an answer before work can continue.
+
+**Form-fill confirmations are no longer one of them.** As of 2026-07-27 the
+agent submits in the same run and reports afterwards — see `skills/form-filling`
+phases 5–7. Points 1 and 3 below still shape those post-submit receipts (a
+self-contained card with the role, the employer and its queue position); point 2
+does not apply, because a receipt is not waiting for anything.
 
 1. **Every card is self-contained.** Include: a status emoji (🎯 career /
    🟢 nav_quota track badge, or a plain ✅/❗️ for a yes-no check), the job
