@@ -89,6 +89,10 @@ print(f"🆔 Worker ID: {WORKER_ID} ({WORKER_LOCATION})")
 # --- CONSTANTS ---
 POLL_INTERVAL = 10  # seconds between DB polls
 STUCK_TIMEOUT_MINUTES = 30  # mark 'sending' applications as failed after this
+# Agent-driven rows (submission_method='agent') sit in 'sending' while the user
+# decides on the Telegram confirm button. Failing them at 30 min throws away a
+# form the agent already filled in and forces a full Playwright re-run.
+AGENT_STUCK_TIMEOUT_MINUTES = int(os.getenv("AGENT_STUCK_TIMEOUT_MINUTES", "360"))
 CLEANUP_EVERY_N_CYCLES = 30  # run cleanup every N poll cycles (~5 min at 10s interval)
 MAX_CONCURRENT_USERS = int(os.getenv("MAX_CONCURRENT_USERS", "3"))
 RETRY_ATTEMPTS = 3
@@ -762,9 +766,11 @@ async def cleanup_stuck_applications():
         except Exception:
             pass  # Function may not exist yet (pre-migration)
 
-        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=STUCK_TIMEOUT_MINUTES)).isoformat()
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(minutes=STUCK_TIMEOUT_MINUTES)).isoformat()
+        agent_cutoff = now - timedelta(minutes=AGENT_STUCK_TIMEOUT_MINUTES)
         response = supabase.table("applications") \
-            .select("id, job_id, updated_at") \
+            .select("id, job_id, updated_at, submission_method") \
             .eq("status", "sending") \
             .lt("updated_at", cutoff) \
             .execute()
@@ -772,21 +778,43 @@ async def cleanup_stuck_applications():
         if not response.data:
             return
 
-        count = len(response.data)
-        await log(f"🧹 Found {count} stuck application(s) (>{STUCK_TIMEOUT_MINUTES}min in 'sending')")
-
+        # Split by owner: the legacy worker owns its own rows, the agent pipeline
+        # owns 'agent' rows and parks them in 'sending' while it waits for the user.
+        stuck = []
+        waiting_on_user = 0
         for app in response.data:
+            if app.get("submission_method") != "agent":
+                stuck.append((app, STUCK_TIMEOUT_MINUTES))
+                continue
+            try:
+                updated = datetime.fromisoformat(app["updated_at"].replace("Z", "+00:00"))
+            except (ValueError, KeyError, AttributeError):
+                updated = None
+            if updated is not None and updated > agent_cutoff:
+                waiting_on_user += 1
+                continue
+            stuck.append((app, AGENT_STUCK_TIMEOUT_MINUTES))
+
+        if waiting_on_user:
+            await log(f"⏳ Left {waiting_on_user} agent application(s) in 'sending' (awaiting user confirmation)")
+
+        if not stuck:
+            return
+
+        await log(f"🧹 Found {len(stuck)} stuck application(s) past their timeout")
+
+        for app, timeout_minutes in stuck:
             supabase.table("applications").update({
                 "status": "failed",
                 "worker_id": None,
                 "claimed_at": None,
                 "skyvern_metadata": {
-                    "error_message": f"Timed out: stuck in 'sending' for >{STUCK_TIMEOUT_MINUTES} minutes. Worker may have restarted or Skyvern was unavailable.",
+                    "error_message": f"Timed out: stuck in 'sending' for >{timeout_minutes} minutes.",
                     "failed_at": datetime.now().isoformat(),
                     "failure_reason": "stuck_timeout"
                 }
             }).eq("id", app["id"]).execute()
-            await log(f"   ❌ App {app['id'][:8]}... → failed (stuck timeout)")
+            await log(f"   ❌ App {app['id'][:8]}... → failed (stuck timeout, >{timeout_minutes}min)")
 
         # Cleanup expired application confirmations and FINN auth requests
         try:

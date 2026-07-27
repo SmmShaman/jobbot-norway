@@ -129,6 +129,26 @@ exists. On wake: pick up the row, run phases 1-8 above, and on success set
 not touch `submission_method` after that, it's a historical marker, not a
 live state field.
 
+**A row awaiting the user's confirm button is not work — never treat it as
+such.** Between phase 5 and phase 6 the row stays at `status='sending'` with an
+`application_confirmations` row at `status='pending'`, sometimes for hours. That
+matches the raw trigger above, so the gate script explicitly subtracts those
+applications (`GATE v2`, 2026-07-27 — see `scripts/patch-agent-pollers.cjs`) and
+hands the agent three fields: `sending_to_fill`, `confirmed_to_submit`, and a
+plain `awaiting_user_button` count. **When the first two are empty, end the turn
+without a single database query** — no "let me verify the queue", no "без змін"
+status line. Before this gate existed the poller woke the agent every 2 minutes
+against a form that was merely waiting on a human, and each no-op wake re-read
+the whole session context for ~190k tokens (8.1M measured across 26–27.07).
+
+The matching worker-side rule lives in `worker/auto_apply.py`:
+`cleanup_stuck_applications()` uses `AGENT_STUCK_TIMEOUT_MINUTES` (default 6h)
+for `submission_method='agent'` rows instead of the 30-minute legacy timeout.
+The old 30-minute sweep destroyed filled-in forms mid-wait and forced a full
+Playwright re-run — on 27.07 the Neat/Teamtailor form was filled twice for
+exactly this reason. Do not lower it back without also removing the
+wait-for-button step.
+
 **Skyvern is gone — there is no fallback path.** `FALLBACK_TO_SKYVERN_WORKER`
 has been removed entirely from `telegram-bot/index.ts`, and
 `worker/auto_apply.py` no longer calls Skyvern under any code path.
