@@ -37,12 +37,22 @@ site, including FINN Enkel Søknad. Site-specific knowledge goes in
 
 ## Phases
 
-1. **Recon** — visit the form fresh, headless, and map its structure before
-   writing any fill logic. Use `assets/recon.mjs` (`dumpFields`, `dumpButtons`,
-   `findByExactText`) to enumerate inputs/buttons and their labels. Take a
-   downscaled screenshot at each step. Record everything learned into a new
-   `sites/<domain>.json` profile (schema below) — do not skip straight to
-   writing a fill script from guesses.
+0. **Check the cache first — this is the whole ballgame.** Derive the form host
+   from the apply URL and look for `/workspace/agent/form-scripts/<host>/fill.mjs`.
+   If it exists, **skip phases 1–2 entirely**: run it with `"submit": false`,
+   answer only what it reports in `unmapped` / `required_missing`, then re-run
+   with `"submit": true`. No recon, no DOM dumps, no exploratory screenshots.
+   Eight platforms cover 80% of the queue, so on most applications this phase is
+   the entire job. Read `CACHE.md` for the I/O contract; it is short and exact.
+1. **Recon — only when the cache misses.** Visit the form fresh, headless, and
+   map its structure before writing any fill logic. Use `assets/recon.mjs`
+   (`dumpFields`, `dumpButtons`, `findByExactText`) to enumerate inputs/buttons
+   and their labels. Take a downscaled screenshot at each step. Do not skip
+   straight to writing a fill script from guesses.
+   **Recon is the expensive step** — 26.07 cost 20.41M tokens for three sites,
+   most of it re-trying the same upload widget seven times. Budget it as a
+   one-time investment in that platform, and make it pay off by finishing
+   phase 9.
 2. **Field mapping by label, not by guessed name** — recruitment sites
    frequently use framework-generated or per-job-dynamic field names (e.g.
    `text_7905`, or React `useId()` ids like `:rv:`). The *label text* is the
@@ -86,6 +96,22 @@ site, including FINN Enkel Søknad. Site-specific knowledge goes in
    retrying blindly. Never leave a row sitting in `sending`: with no human step
    left, a row in `sending` means work in progress, and anything still there
    after `AGENT_STUCK_TIMEOUT_MINUTES` is swept into `failed` by the worker.
+
+9. **Bank the recon — mandatory, before the turn ends.** If phase 1 ran, you
+   have just spent millions of tokens learning one platform. Write both
+   `/workspace/agent/form-scripts/<host>/profile.json` and a parameterised
+   `fill.mjs` matching the `CACHE.md` contract, then verify the script by
+   re-running it against the same URL with `"submit": false`. A turn that did
+   recon and did not leave a working `fill.mjs` behind has to be treated as
+   unfinished — the next application on that platform will pay the full cost
+   again. This is not bookkeeping; it is the difference between ~6.8M tokens per
+   application and near-zero.
+   Keep it keyed by **form host, not employer** (`candidate.webcruiter.com`, not
+   the hospital that posted the job) — one script must serve every company on
+   that ATS. Working files for a single run may live in `/tmp`; anything worth
+   keeping goes under `/workspace/agent/`, which is host-backed and survives
+   container rebuilds. `/tmp` does not: 58 scripts written there between 22.07
+   and 27.07 were all thrown away.
 
 **Legacy confirmations.** `application_confirmations` rows created before
 2026-07-27 may still be `pending` with live Telegram cards. If the user presses

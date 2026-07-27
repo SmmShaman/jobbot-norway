@@ -70,7 +70,7 @@ const DB_PATH =
 const FILL_SERIES = process.env.JOBBOT_FILL_SERIES || 'task-1784787379628-6jph2g';
 const MANUAL_SERIES = process.env.JOBBOT_MANUAL_SERIES || 'task-1784787352236-wrt8oh';
 
-const MARKER = 'ROUTING v4 (2026-07-27)';
+const MARKER = 'CACHE v5 (2026-07-27)';
 
 // Appended blocks, oldest first. Everything from the first match onwards is cut
 // before the current block is added.
@@ -117,6 +117,10 @@ console.log(JSON.stringify({
 const FILL_BLOCK = `
 
 ⏹ АВТОСАБМІТ — ЧИННЕ ПРАВИЛО (${MARKER}). Скасовує будь-яку вимогу вище чекати на кнопку підтвердження вже заповненої форми і будь-яку заборону відправляти без такого підтвердження. Обидві скасовано власником 2026-07-27; кроку схвалення форми більше не існує.
+
+🗄 СПОЧАТКУ КЕШ, ПОТІМ RECON. Візьми хост форми з apply-URL і перевір \`/workspace/agent/form-scripts/<хост>/fill.mjs\`. Якщо він є — recon НЕ роби взагалі: запусти скрипт із \`"submit": false\`, дай відповіді лише на те, що він поверне в \`unmapped\`/\`required_missing\`, і запусти ще раз із \`"submit": true\`. Вісім платформ покривають 80% черги, тож у більшості випадків це вся робота. Контракт — у \`skills/form-filling/CACHE.md\`.
+
+Якщо скрипта немає — роби recon, а потім ОБОВʼЯЗКОВО, до завершення ходу, збережи \`/workspace/agent/form-scripts/<хост>/profile.json\` і параметризований \`fill.mjs\` та перевір його повторним запуском. Recon без збереженого скрипта = викинуті ~6,8M токенів, які наступна заявка на цій же платформі заплатить знову. НІКОЛИ не лишай напрацьоване в \`/tmp\` — його стирає перезбірка контейнера (так згинули 58 скриптів за 22–27.07).
 
 Для черги \`sending_to_fill\`: заповни форму → зроби скріншот і список «поле → значення» → **одразу натисни submit** → постав \`applications.status='sent'\` → надішли скріншот і список у ТЕХНІЧНИЙ бот як квитанцію БЕЗ кнопок.
 
