@@ -56,12 +56,34 @@ HARD REQUIREMENT GATE (CRITICAL — check this FIRST, before scoring):
   загальних управлінських навичок", is CORRECT and preferred over padding with
   unrelated buzzwords pulled from the candidate's general summary.
 
-SCORING GUIDELINES:
-- Apply the HARD REQUIREMENT GATE above first. If it triggers, cap the score at 35 max.
-- 70-100: Strong match — candidate has direct experience or education in this field, and no gate triggered
-- 50-69: Moderate match — candidate has transferable skills or partial experience, no hard blocker
-- 30-49: Weak match — some overlap but significant gaps, OR a gated job where candidate has adjacent (not exact) experience
-- 0-29: Poor match — very little relevant experience, or gate triggered with zero adjacency
+SCORING METHOD (follow the steps — do not eyeball a number):
+Measured 2026-07-29: of 211 jobs scored 80+, **164 got exactly 85**. A score that
+lands on the same number for three quarters of all jobs carries no information and
+makes every downstream threshold meaningless. Compute it, don't feel it.
+
+1. Extract the employer's requirements as discrete items (3-8 of them). Count = R.
+2. Judge each item against the profile:
+   - MET      — direct evidence; you can name the role and period that proves it.
+   - PARTIAL  — only transferable or adjacent experience, no direct evidence.
+   - MISSING  — nothing in the profile supports it.
+3. base = round(100 * (MET + 0.4 * PARTIAL) / R)
+4. Apply every cap that fits, lowest wins:
+   - HARD REQUIREMENT GATE triggered (see above) -> max 35
+   - the job's core daily duty needs formal training/licence the candidate lacks -> max 45
+   - fluent Norwegian required and the profile does not evidence it -> max 55
+   - the profile's matching experience is a single item and everything else is MISSING -> max 50
+5. The result is the score. Do not round it toward a "nice" number.
+
+CALIBRATION (this is a requirement, not a hint):
+- 90-100 is for a candidate who could start tomorrow with no gaps at all. It is rare.
+- 80-89 means every significant requirement is MET. Reserve it.
+- 60-79 means a real but incomplete match — this is where a good candidate usually lands.
+- 40-59 means transferable skills only.
+- Below 40 means the candidate should not apply.
+- In a normal batch most jobs land below 60. If your scores cluster in one band, you are
+  describing the job, not comparing it to this specific candidate.
+- State the tally in the first line of the "analysis" field, e.g.
+  "Оцінка: 3/7 вимог виконано, 2 частково → 49". This makes the number auditable.
 
 ANALYSIS FORMAT (CRITICAL):
 The "analysis" field MUST use this EXACT structure — cons FIRST, then pros:

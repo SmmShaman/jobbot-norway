@@ -123,12 +123,35 @@ HARD REQUIREMENT GATE (CRITICAL — check this FIRST, before scoring):
   загальних управлінських навичок", is CORRECT and preferred over padding with
   unrelated buzzwords pulled from the candidate's general summary.
 
-SCORING GUIDELINES:
-- Apply the HARD REQUIREMENT GATE above first. If it triggers, cap the score at 35 max.
-- 70-100: Strong match — candidate has direct experience or education in this field, and no gate triggered
-- 50-69: Moderate match — candidate has transferable skills or partial experience, no hard blocker
-- 30-49: Weak match — some overlap but significant gaps, OR a gated job where candidate has adjacent (not exact) experience
-- 0-29: Poor match — very little relevant experience, or gate triggered with zero adjacency
+SCORING METHOD (follow the steps — do not eyeball a number):
+Measured 2026-07-29: of 211 jobs scored 80+, **164 got exactly 85**. A score that
+lands on the same number for three quarters of all jobs carries no information and
+makes every downstream threshold meaningless. Compute it, don't feel it.
+
+1. Extract the employer's requirements as discrete items (3-8 of them). Count = R.
+2. Judge each item against the profile:
+   - MET      — direct evidence; you can name the role and period that proves it.
+   - PARTIAL  — only transferable or adjacent experience, no direct evidence.
+   - MISSING  — nothing in the profile supports it.
+3. base = round(100 * (MET + 0.4 * PARTIAL) / R)
+4. Apply every cap that fits, lowest wins:
+   - HARD REQUIREMENT GATE triggered (see above) -> max 35
+   - the job's core daily duty needs formal training/licence the candidate lacks -> max 45
+   - fluent Norwegian required and the profile does not evidence it -> max 55
+   - the profile's matching experience is a single item and everything else is MISSING -> max 50
+5. The result is the score. Do not round it toward a "nice" number.
+
+CALIBRATION (this is a requirement, not a hint):
+- 90-100 is for a candidate who could start tomorrow with no gaps at all. It is rare.
+  If you have never produced one, that is expected — do not manufacture one.
+- 80-89 means every significant requirement is MET. Reserve it.
+- 60-79 means a real but incomplete match — this is where a good candidate usually lands.
+- 40-59 means transferable skills only.
+- Below 40 means the candidate should not apply.
+- In a normal batch most jobs land below 60. If your scores cluster in one band, you are
+  describing the job, not comparing it to this specific candidate.
+- State the tally in the first line of the "analysis" field, e.g.
+  "Оцінка: 3/7 вимог виконано, 2 частково → 49". This makes the number auditable.
 
 ANALYSIS FORMAT (CRITICAL):
 The "analysis" field MUST use this EXACT structure — cons FIRST, then pros:
@@ -704,7 +727,17 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
     print(f"   Limit: {limit}, User: {user_id or 'all'}")
 
     # 1. Get unanalyzed jobs (includes previously failed ones for re-analysis)
-    query = supabase.table('jobs').select('*').neq('status', 'ANALYZED').not_.is_('description', 'null')
+    # ARCHIVED is a deliberate "forget this one" marker, set by the owner on the
+    # pre-2026-07-29 backlog. Without excluding it here the archive would be
+    # re-analyzed on the next run, since the query takes everything that is not
+    # ANALYZED.
+    query = (
+        supabase.table('jobs')
+        .select('*')
+        .neq('status', 'ANALYZED')
+        .neq('status', 'ARCHIVED')
+        .not_.is_('description', 'null')
+    )
 
     if user_id:
         query = query.eq('user_id', user_id)
@@ -756,7 +789,7 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
             profile = profile_resp.data[0]['content']
 
             # Get user settings
-            settings_resp = supabase.table('user_settings').select('preferred_analysis_language, telegram_chat_id, job_analysis_prompt, auto_soknad_enabled, auto_soknad_min_score, card_notify_min_score').eq('user_id', uid).limit(1).execute()
+            settings_resp = supabase.table('user_settings').select('preferred_analysis_language, telegram_chat_id, job_analysis_prompt, auto_soknad_enabled, auto_soknad_min_score, card_notify_min_score, max_applications_per_day').eq('user_id', uid).limit(1).execute()
 
             lang = 'uk'
             chat_id = None
@@ -764,6 +797,7 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
             auto_soknad = False
             min_score = 50
             card_notify_min_score = 40
+            apps_per_day = 5
 
             if settings_resp.data:
                 settings = settings_resp.data[0]
@@ -774,6 +808,20 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                 auto_soknad = settings.get('auto_soknad_enabled', False) or False
                 min_score = settings.get('auto_soknad_min_score', 50) or 50
                 card_notify_min_score = settings.get('card_notify_min_score', 40) or 40
+                apps_per_day = settings.get('max_applications_per_day', 5) or 5
+
+            # How many applications this user already has from today — the cap counts
+            # applications, not analyses, so a re-run of the worker cannot double it.
+            today_iso = datetime.utcnow().strftime('%Y-%m-%d')
+            try:
+                apps_today = supabase.table('applications').select('id') \
+                    .eq('user_id', uid).gte('created_at', today_iso).execute()
+                apps_today_count = len(apps_today.data or [])
+            except Exception as e:
+                # Fail closed: if the count is unknown, do not open the floodgates.
+                print(f"   ⚠️ Could not count today's applications ({e}) — treating the cap as reached")
+                apps_today_count = apps_per_day
+            capped_count = 0
 
             lang_full_name = LANG_MAP.get(lang, 'Ukrainian')
             auto_label = f" | auto-søknad≥{min_score}%" if auto_soknad else ""
@@ -823,14 +871,26 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
 
                     job['track'] = track
 
-                    # Auto-søknad generation (before sending card, so it's included)
+                    # Auto-søknad generation (before sending card, so it's included).
+                    # The daily cap is what stops the queue from running away: on
+                    # 2026-07-29 there were 235 open applications, 220 of them from
+                    # LinkedIn, because every job scoring >= 60 got a søknad and the
+                    # scorer handed out 85 to three quarters of everything.
+                    # max_applications_per_day sat in user_settings, unread by any code.
                     auto_app = None
-                    if auto_soknad and result['score'] >= min_score:
+                    if auto_soknad and result['score'] >= min_score and apps_today_count >= apps_per_day:
+                        capped_count += 1
+                        print(
+                            f"   ⏹ Daily cap {apps_per_day} reached — no søknad for "
+                            f"{job['title'][:30]} (score={result['score']})"
+                        )
+                    elif auto_soknad and result['score'] >= min_score:
                         print(f"   ✍️ Auto-søknad for: {job['title'][:30]} (score={result['score']})")
                         soknad_result = await generate_soknad_via_api(client, job['id'], uid)
                         if soknad_result.get('success') and soknad_result.get('application'):
                             auto_app = soknad_result['application']
                             auto_soknad_count += 1
+                            apps_today_count += 1
                         else:
                             err = soknad_result.get('message', 'Unknown error')
                             print(f"   ⚠️ Auto-søknad failed: {err}")
@@ -863,6 +923,8 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
 
             if filtered_count > 0:
                 print(f"   🔕 Filtered (no card, score < {card_notify_min_score}): {filtered_count} jobs — see evening digest")
+            if capped_count > 0:
+                print(f"   ⏹ Daily cap held back {capped_count} søknad(s) — limit is {apps_per_day}/day")
 
             # Auto-søknad summary for this user (sent to tech bot only, never the main bot)
             if auto_soknad and auto_soknad_count > 0 and chat_id:
