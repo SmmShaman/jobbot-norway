@@ -143,17 +143,24 @@ HARD REQUIREMENT GATE (CRITICAL — check this FIRST, before scoring):
   загальних управлінських навичок", is CORRECT and preferred over padding with
   unrelated buzzwords pulled from the candidate's general summary.
 
-SCORING METHOD (compute it, do not eyeball it):
-1. List the employer's requirements as 3-8 discrete items. Count = R.
-2. Mark each: MET (direct evidence — you can name the role/period), PARTIAL
-   (transferable only), MISSING (nothing supports it).
-3. score = round(100 * (MET + 0.4 * PARTIAL) / R)
-4. Apply every cap that fits, lowest wins:
-   - hard requirement gate above triggered -> max 35
-   - core daily duty needs training/licence the candidate lacks -> max 45
-   - fluent Norwegian required, profile does not evidence it -> max 55
-   - only one requirement MET, rest MISSING -> max 50
-5. Do not round toward a "nice" number.
+SCORING — YOU COUNT, THE SYSTEM COMPUTES:
+Do not invent a number. Classify the employer's requirements and report the counts;
+the score is calculated from them outside this prompt.
+1. List the employer's requirements as 3-8 discrete items -> req_total.
+2. Classify each one:
+   - req_met      — direct evidence; you can name the role and period that proves it.
+   - req_partial  — transferable or adjacent experience only, no direct evidence.
+   - everything else is missing (req_total - req_met - req_partial).
+3. Report req_total / req_met / req_partial as integers in the JSON.
+4. Also report these booleans, honestly, from the job text and the profile:
+   - needs_norwegian  — the ad requires fluent/good Norwegian AND the profile does
+                        not evidence it (the candidate is B1; "flytende norsk" is
+                        not evidenced)
+   - needs_licence    — the core daily duty requires formal training, a licence or a
+                        certified trade the profile does not show
+A requirement the candidate cannot demonstrate is MISSING, not PARTIAL. Counting
+a gap as partial credit is the single easiest way to make this whole system lie.
+Still give "score" your own estimate — it is kept only as a cross-check.
 
 CALIBRATION (requirement, not a hint):
 90-100 could start tomorrow with no gaps — rare, never manufacture one.
@@ -182,7 +189,12 @@ If the target language is English, use "❌ Cons:" and "✅ Pros:".
 
 OUTPUT FORMAT (JSON ONLY):
 {
-  "score": number (0-100),
+  "score": number (0-100, your own estimate — cross-check only),
+  "req_total": number (how many requirements you listed, 3-8),
+  "req_met": number (requirements with direct evidence in the profile),
+  "req_partial": number (requirements covered only by transferable experience),
+  "needs_norwegian": boolean (fluent Norwegian required and not evidenced),
+  "needs_licence": boolean (formal licence/trade required and not evidenced),
   "position_uk": "string (job title/position translated to Ukrainian, short — e.g. 'Менеджер з продажу', 'Водій', 'Бізнес-контролер')",
   "analysis": "string (structured cons/pros format as described above)",
   "tasks": "string (bullet point list of duties/responsibilities)",
@@ -378,6 +390,41 @@ def classify_track(job: dict) -> str:
     return 'nav_quota'
 
 
+def score_from_counts(content: dict) -> int:
+    """Derive the score from the model's requirement tally instead of its own number.
+
+    Why (2026-07-29): asked to follow a rubric, the model wrote a fine analysis and
+    then produced a number unrelated to it. AutoStore's AI Solution Analyst scored
+    100 while the same answer said there was no direct HR/Legal/Strategy experience
+    and no evidenced Norwegian — two facts that cap it far below that under the
+    rubric. Classification is what models are good at; arithmetic is what they drift
+    on. So the model counts, and this function computes.
+
+    Falls back to the model's own score only when the counts are missing or absurd,
+    so a malformed answer degrades to the old behaviour rather than to zero.
+    """
+    try:
+        total = int(content.get('req_total') or 0)
+        met = int(content.get('req_met') or 0)
+        partial = int(content.get('req_partial') or 0)
+    except (TypeError, ValueError):
+        return int(content.get('score') or 0)
+
+    if total < 1 or met < 0 or partial < 0 or (met + partial) > total:
+        return int(content.get('score') or 0)
+
+    score = round(100 * (met + 0.4 * partial) / total)
+
+    if content.get('needs_licence'):
+        score = min(score, 45)
+    if content.get('needs_norwegian'):
+        score = min(score, 55)
+    if met <= 1 and total >= 3:
+        score = min(score, 50)
+
+    return max(0, min(100, score))
+
+
 async def analyze_job(
     client: httpx.AsyncClient,
     job: dict,
@@ -498,7 +545,7 @@ Location: {job.get('location', 'Unknown')}
                     used_model = f"{model} (fallback)"
 
                 gated_score = apply_hard_requirement_gate(
-                    content.get('score', 0), job.get('title', ''), content.get('requirements', '')
+                    score_from_counts(content), job.get('title', ''), content.get('requirements', '')
                 )
                 gated_score = apply_seniority_gate(
                     gated_score, track, job.get('title', ''), content.get('analysis', '')
