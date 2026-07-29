@@ -29,7 +29,6 @@ USAGE
 """
 
 import argparse
-import html
 import json
 import os
 import re
@@ -219,35 +218,23 @@ def searx_search(client: httpx.Client, query: str) -> list[str]:
         return []
 
 
-def ddg_search(client: httpx.Client, query: str, tries: int = 2) -> list[str]:
-    """DuckDuckGo's keyless HTML endpoints — best-effort only.
-
-    Verified working on 2026-07-29 and then rate-limited within the hour: it
-    starts answering 202 with a challenge page instead of results. Treat any
-    non-200 as "channel is down right now", never as "no such job".
-    """
-    urls: list[str] = []
-    for endpoint in ("https://html.duckduckgo.com/html/", "https://lite.duckduckgo.com/lite/"):
-        for attempt in range(tries):
-            try:
-                r = client.get(endpoint, params={"q": query}, headers=UA, timeout=25)
-                if r.status_code != 200:
-                    time.sleep(2 + attempt * 3)
-                    continue
-                for m in re.finditer(r"uddg=([^&\"']+)", r.text):
-                    u = urllib.parse.unquote(html.unescape(m.group(1)))
-                    if u.startswith("http") and u not in urls:
-                        urls.append(u)
-                if urls:
-                    return urls
-            except Exception:
-                time.sleep(2 + attempt * 3)
-    return urls
+def search_available() -> bool:
+    """Is any search channel actually configured? Used to skip fast instead of waiting."""
+    have_cse = bool((os.environ.get("GOOGLE_SEARCH_KEY") or os.environ.get("GOOGLE_API_KEY")) and os.environ.get("GOOGLE_CSE_ID"))
+    return have_cse or bool(os.environ.get("SEARX_URL"))
 
 
 def web_search(client: httpx.Client, query: str, verbose: bool = False) -> tuple[list[str], str]:
-    """Try the channels in order of reliability; report which one answered."""
-    for name, fn in (("cse", cse_search), ("searx", searx_search), ("ddg", ddg_search)):
+    """Try the configured channels in order; report which one answered.
+
+    DuckDuckGo's keyless endpoint was here until 2026-07-29 and is gone at the
+    owner's instruction. It was unreliable (200 with results one hour, 202 with an
+    anti-bot challenge the next) and its results were poor enough to matter: for
+    AutoStore it surfaced a job aggregator that the acceptance rule only just
+    caught. A search channel that has to be second-guessed is worse than none,
+    because "no channel" is handled cleanly — the job steps aside.
+    """
+    for name, fn in (("cse", cse_search), ("searx", searx_search)):
         urls = fn(client, query)
         if urls:
             if verbose:
@@ -496,7 +483,7 @@ def main() -> None:
     ap.add_argument(
         "--skip-after-hours",
         type=int,
-        default=int(os.environ.get("RESOLVER_SKIP_AFTER_HOURS", "24")),
+        default=None,  # resolved after load_env(): 24h normally, 0 with no channel
         help="a pending_manual row with no form URL older than this is moved out of "
         "the queue to manual_review, so an unresolvable job never blocks the rest",
     )
@@ -510,6 +497,12 @@ def main() -> None:
     args = ap.parse_args()
 
     load_env()
+    if args.skip_after_hours is None:
+        # With no search channel configured, waiting a day changes nothing — sweep
+        # on the next run instead of parking the row for 24h.
+        args.skip_after_hours = int(
+            os.environ.get("RESOLVER_SKIP_AFTER_HOURS", "24" if search_available() else "0")
+        )
     db = Supa()
 
     if args.reactivate:
@@ -540,6 +533,18 @@ def main() -> None:
     skipped = sweep_stale(db, args.dry_run, args.skip_after_hours)
     if skipped:
         print(f"skipped (no form URL, out of the queue): {skipped}")
+
+    if not search_available():
+        # Nothing to search with. Do not let rows sit waiting for a channel that
+        # may not come back — the owner's rule is to skip and keep moving. The
+        # 24h sweep above has already moved the older ones aside.
+        print("no search channel configured (Google CSE / SearxNG) — resolution skipped this run")
+        if promoted or skipped:
+            tech_notify(
+                (f"📥 У чергу на заповнення: {promoted}\n" if promoted else "")
+                + (f"⏭ Пропущено без адреси форми: {skipped}" if skipped else "")
+            )
+        return
 
     apps = pick_jobs(db, args.limit, args.statuses)
     cse_cap = int(os.environ.get("CSE_DAILY_CAP", "80"))
