@@ -70,6 +70,13 @@ Vitalii's id (`f92ee73e-786a-4990-b434-23f67203eb53`).
   **not** fill/submit a form. Instead set `applications.status = 'manual_review'` and notify
   Vitalii via the main bot, e.g. "заявка Наталі — потребує окремого налаштування."
 
+Since `POLICY v6.1` (2026-07-29) both poller gates filter on Vitalii's `user_id`, so those rows no
+longer reach the agent at all. They used to: the two of Natalia's applications sitting in
+`pending_manual` woke the agent every two minutes for work it is forbidden to do, and would have
+blocked the head of the queue permanently once the gate started handing out one row at a time.
+The rows themselves are untouched and still need a human decision — the gate hides them, it does
+not resolve them.
+
 **Deferred, separate task — do not start without explicit request**: a fully `user_id`-aware
 pipeline where profile/CV/documents/letter signature are always sourced from the actual
 application owner, documents reorganized into `documents/<user>/`, and Vitalii's own diploma/

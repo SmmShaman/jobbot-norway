@@ -88,7 +88,17 @@ const DB_PATH =
 const FILL_SERIES = process.env.JOBBOT_FILL_SERIES || 'task-1784787379628-6jph2g';
 const MANUAL_SERIES = process.env.JOBBOT_MANUAL_SERIES || 'task-1784787352236-wrt8oh';
 
-const MARKER = 'POLICY v6 (2026-07-29)';
+const MARKER = 'POLICY v6.1 (2026-07-29)';
+
+// Two users are live in production. The agent is only allowed to write letters
+// and fill forms for Vitalii — Natalia's rows must go to manual_review by hand
+// (see skills/application-pipeline/SKILL.md, "Multi-user safeguard"). Until now
+// the gates ignored this, so both her pending_manual rows woke the agent every
+// two minutes for work it is forbidden to do, and with the one-row-per-wake
+// slice they would have blocked the head of the queue permanently. Filter at the
+// gate: an application the agent may not touch is not work.
+const OWNER_USER_ID =
+  process.env.JOBBOT_OWNER_USER_ID || 'f92ee73e-786a-4990-b434-23f67203eb53';
 
 // Appended blocks, oldest first. Everything from the first match onwards is cut
 // before the current block is added.
@@ -122,7 +132,7 @@ const FILL_SCRIPT = `${HALT_GUARD}
 # The agent fills and submits in one run, so a row in 'sending' is always real
 # work. Legacy pending confirmations are counted, never subtracted.
 AUTH=(-H "apikey: \${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer \${SUPABASE_SERVICE_KEY}")
-Q1=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id&status=eq.sending&submission_method=eq.agent&order=created_at.asc" "\${AUTH[@]}")
+Q1=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id&status=eq.sending&submission_method=eq.agent&user_id=eq.${OWNER_USER_ID}&order=created_at.asc" "\${AUTH[@]}")
 Q2=$(curl -s "\${SUPABASE_URL}/rest/v1/application_confirmations?select=id&status=eq.confirmed&submitted_at=is.null&order=created_at.asc" "\${AUTH[@]}")
 Q3=$(curl -s "\${SUPABASE_URL}/rest/v1/application_confirmations?select=application_id&status=eq.pending" "\${AUTH[@]}")
 # A failed curl must not turn into a JS syntax error inside the gate.
@@ -152,7 +162,7 @@ console.log(JSON.stringify({
 `;
 
 const MANUAL_SCRIPT = `${HALT_GUARD}
-Q=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id,job_id,user_id,created_at&status=eq.pending_manual&order=created_at.asc" -H "apikey: \${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer \${SUPABASE_SERVICE_KEY}")
+Q=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id,job_id,user_id,created_at&status=eq.pending_manual&user_id=eq.${OWNER_USER_ID}&order=created_at.asc" -H "apikey: \${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer \${SUPABASE_SERVICE_KEY}")
 case "$Q" in ""|"null") Q="[]";; esac
 node -e "
 const arr = v => (Array.isArray(v) ? v : []);
@@ -173,7 +183,7 @@ const TURN_BUDGET = `⏹ РЕЖИМ РОБОТИ (${MARKER})
 
 Джерело правди — \`/workspace/extra/jobbot/skills/form-filling/SKILL.md\` (розділ «Turn budget», фази 0–9) і \`skills/form-filling/CACHE.md\`. Нижче — тільки те, що стосується цього поллера.
 
-1️⃣ ОДНА ЗАЯВКА ЗА ПРОГІН. Гейт віддає щонайбільше один рядок і окремо \`*_total\` — довжину черги. Доведи цей рядок до кінцевого статусу і заверши хід. Не питай наступний рядок, не «добери ще, поки контекст теплий»: поллер спрацює знову за 2–5 хв і візьме наступну заявку на чистому контексті. 29.07 контекст переповнився тричі за 45 хв саме через накопичення.
+1️⃣ ОДНА ЗАЯВКА ЗА ПРОГІН. Гейт віддає щонайбільше один рядок і окремо \`*_total\` — довжину черги. Рядки вже відфільтровані за \`user_id\` власника (Vitalii), тож чужі заявки до тебе не доходять і будити тебе через них гейт не буде. Доведи цей рядок до кінцевого статусу і заверши хід. Не питай наступний рядок, не «добери ще, поки контекст теплий»: поллер спрацює знову за 2–5 хв і візьме наступну заявку на чистому контексті. 29.07 контекст переповнився тричі за 45 хв саме через накопичення.
 
 2️⃣ СУБАГЕНТИ — не більше 2 одночасно і лише для справді незалежних задач з чіткою умовою зупинки. Віяло «один субагент на заявку» ЗАБОРОНЕНО: 29.07 чотири паралельні субагенти на 13 LinkedIn-заявок з'їли 16,3M (76% усіх витрат) і не відправили жодної. Кожному субагенту прямо кажи повернути короткий структурований результат (URL + вердикт + один рядок доказу), а не транскрипт, не HTML і не дампи DOM. Якщо задачу не вдається так вузько описати — роби її сам: свій контекст ти вже оплатив, субагент оплачує новий.
 
