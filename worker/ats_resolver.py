@@ -127,8 +127,105 @@ class Supa:
 # --------------------------------------------------------------------------- #
 # search
 # --------------------------------------------------------------------------- #
+QUOTA_FILE = Path(__file__).resolve().parent / ".resolver_quota.json"
+
+
+def quota_take(channel: str, cap: int) -> bool:
+    """Hard daily cap per channel, persisted on disk.
+
+    Google's free Custom Search tier is 100 queries/day *per Cloud project*, and
+    that project's quota is shared with whatever else uses the same key. Going
+    over does not fail — it bills. So the counter is the safety, not the intent.
+    """
+    today = time.strftime("%Y-%m-%d")
+    data = {}
+    if QUOTA_FILE.exists():
+        try:
+            data = json.loads(QUOTA_FILE.read_text())
+        except Exception:
+            data = {}
+    if data.get("date") != today:
+        data = {"date": today}
+    used = int(data.get(channel, 0))
+    if used >= cap:
+        return False
+    data[channel] = used + 1
+    try:
+        QUOTA_FILE.write_text(json.dumps(data))
+    except Exception:
+        pass
+    return True
+
+
+def quota_left(channel: str, cap: int) -> int:
+    if not QUOTA_FILE.exists():
+        return cap
+    try:
+        data = json.loads(QUOTA_FILE.read_text())
+    except Exception:
+        return cap
+    if data.get("date") != time.strftime("%Y-%m-%d"):
+        return cap
+    return max(0, cap - int(data.get(channel, 0)))
+
+
+def cse_search(client: httpx.Client, query: str) -> list[str]:
+    """Google Programmable Search — the reliable channel, 100 queries/day free.
+
+    Needs GOOGLE_SEARCH_KEY (or GOOGLE_API_KEY) + GOOGLE_CSE_ID, the Custom
+    Search API enabled on that Cloud project, and the engine set to search the
+    entire web. Returns [] and stays quiet if any of that is missing, so the
+    caller just falls through to the next channel.
+    """
+    key = os.environ.get("GOOGLE_SEARCH_KEY") or os.environ.get("GOOGLE_API_KEY")
+    cx = os.environ.get("GOOGLE_CSE_ID")
+    if not key or not cx:
+        return []
+    cap = int(os.environ.get("CSE_DAILY_CAP", "80"))
+    if not quota_take("cse", cap):
+        print("      [cse] daily cap reached — skipping channel")
+        return []
+    try:
+        r = client.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params={"key": key, "cx": cx, "q": query, "num": 8},
+            timeout=25,
+        )
+        if r.status_code != 200:
+            print(f"      [cse] {r.status_code}: {r.text[:120]}")
+            return []
+        return [i["link"] for i in r.json().get("items", []) if i.get("link")]
+    except Exception as e:
+        print(f"      [cse] {type(e).__name__}: {e}")
+        return []
+
+
+def searx_search(client: httpx.Client, query: str) -> list[str]:
+    """Self-hosted SearxNG, if one is running (SEARX_URL). Keyless and unmetered."""
+    base = os.environ.get("SEARX_URL")
+    if not base:
+        return []
+    try:
+        r = client.get(
+            base.rstrip("/") + "/search",
+            params={"q": query, "format": "json", "language": "no"},
+            headers=UA,
+            timeout=25,
+        )
+        if r.status_code != 200:
+            return []
+        return [x["url"] for x in r.json().get("results", []) if x.get("url")]
+    except Exception:
+        return []
+
+
 def ddg_search(client: httpx.Client, query: str, tries: int = 2) -> list[str]:
-    """DuckDuckGo's keyless HTML endpoints. Returns result URLs in rank order."""
+    """DuckDuckGo's keyless HTML endpoints — best-effort only.
+
+    Verified working on 2026-07-29 and then rate-limited within the hour: it
+    starts answering 202 with a challenge page instead of results. Treat any
+    non-200 as "channel is down right now", never as "no such job".
+    """
     urls: list[str] = []
     for endpoint in ("https://html.duckduckgo.com/html/", "https://lite.duckduckgo.com/lite/"):
         for attempt in range(tries):
@@ -146,6 +243,17 @@ def ddg_search(client: httpx.Client, query: str, tries: int = 2) -> list[str]:
             except Exception:
                 time.sleep(2 + attempt * 3)
     return urls
+
+
+def web_search(client: httpx.Client, query: str, verbose: bool = False) -> tuple[list[str], str]:
+    """Try the channels in order of reliability; report which one answered."""
+    for name, fn in (("cse", cse_search), ("searx", searx_search), ("ddg", ddg_search)):
+        urls = fn(client, query)
+        if urls:
+            if verbose:
+                print(f"      [{name}] {len(urls)} results")
+            return urls, name
+    return [], "none"
 
 
 def rank_candidates(urls: list[str], company: str) -> list[str]:
@@ -224,7 +332,9 @@ def pick_jobs(db: Supa, limit: int, statuses: str) -> list[dict]:
     return out
 
 
-def resolve_one(client: httpx.Client, job: dict, max_pages: int, verbose: bool) -> tuple[str | None, float, list[str]]:
+def resolve_one(
+    client: httpx.Client, job: dict, max_pages: int, verbose: bool
+) -> tuple[str | None, float, list[str], bool]:
     title = (job.get("title") or "").strip()
     company = (job.get("company") or "").strip()
     location = (job.get("location") or "").strip().split(",")[0]
@@ -237,8 +347,14 @@ def resolve_one(client: httpx.Client, job: dict, max_pages: int, verbose: bool) 
 
     tried: list[str] = []
     best_url, best_score = None, 0.0
+    channels: set[str] = set()
     for q in queries:
-        urls = rank_candidates(ddg_search(client, q), company)
+        raw, channel = web_search(client, q, verbose)
+        channels.add(channel)
+        if channel == "none":
+            print("      no search channel answered — stopping this job")
+            break
+        urls = rank_candidates(raw, company)
         for u in urls[:max_pages]:
             if u in tried:
                 continue
@@ -258,7 +374,10 @@ def resolve_one(client: httpx.Client, job: dict, max_pages: int, verbose: bool) 
         if best_score >= 0.60:
             break
         time.sleep(2.5)
-    return (best_url, best_score, tried) if best_score >= 0.45 else (None, best_score, tried)
+    searched = channels != {"none"} and channels != set()
+    if best_score >= 0.45:
+        return best_url, best_score, tried, searched
+    return None, best_score, tried, searched
 
 
 def tech_notify(text: str) -> None:
@@ -317,14 +436,21 @@ def main() -> None:
         return
 
     apps = pick_jobs(db, args.limit, args.statuses)
-    print(f"candidates: {len(apps)}")
+    cse_cap = int(os.environ.get("CSE_DAILY_CAP", "80"))
+    print(f"candidates: {len(apps)} | cse budget left today: {quota_left('cse', cse_cap)}/{cse_cap}")
     client = httpx.Client(follow_redirects=True)
-    found = missed = 0
+    found = missed = blocked = 0
 
     for app in apps:
         job = app["jobs"]
         print(f"\n[{job.get('company')}] {job.get('title')}  (app {app['id'][:8]})")
-        url, score, tried = resolve_one(client, job, args.max_pages, args.verbose)
+        url, score, tried, searched = resolve_one(client, job, args.max_pages, args.verbose)
+        if not searched:
+            # No search channel answered. This says nothing about the job, so it
+            # must not be marked as unresolvable — that note is permanent.
+            blocked += 1
+            print("  SKIP  search unavailable, leaving the row untouched")
+            continue
         if url:
             found += 1
             print(f"  MATCH {score:.2f} -> {url}")
@@ -343,6 +469,8 @@ def main() -> None:
                 db.patch("applications", {"error_message": note}, id=f"eq.{app['id']}")
 
     summary = f"🔎 ATS-resolver: {found} знайдено, {missed} без форми (з {len(apps)})"
+    if blocked:
+        summary += f"; {blocked} відкладено — пошуковий канал недоступний"
     print("\n" + summary)
     if not args.dry_run and apps:
         tech_notify(summary)
