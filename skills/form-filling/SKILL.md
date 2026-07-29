@@ -103,15 +103,36 @@ of this skill as the Playwright mechanics.
    stable, human-meaningful anchor. Map fields by their label first, and only
    fall back to structural selectors (`input[name^="text_"]`, "the input
    nearest this label") when no stable name/id exists.
-3. **Fill.** Fill every field: personal info, CV upload
-   (`assets/file-upload.mjs`), custom per-job questions, cover letter
-   (`assets/text-fields.mjs` — check char limit BEFORE inserting, some fields
-   are contenteditable divs, not real `<textarea>`s), phone number
-   (`assets/phone-input.mjs` if the site has a masked phone widget).
+3. **Fill everything except the cover letter.** Personal info, CV upload
+   (`assets/file-upload.mjs`), custom per-job questions, phone number
+   (`assets/phone-input.mjs` if the site has a masked phone widget). Leave the
+   cover-letter field empty for now.
+   Reason (owner's rule, 2026-07-29): the letter is the expensive part and it is
+   written by Claude on the subscription, so it must not be written for an
+   application that never reaches a form. Filling first also surfaces the things
+   that kill a run — account wall, CAPTCHA, a hidden hard requirement, a dead
+   URL — before any letter has been paid for.
+
+3b. **Write the letter — last, and only if the form asks for one.** Once every
+   other field is filled and nothing is left to decide, look at what the form
+   actually wants:
+   - a **text field** for the letter → write it now per
+     `skills/soknad-writing/SKILL.md`, check the live char limit first
+     (`assets/text-fields.mjs`; some fields are contenteditable divs, not real
+     `<textarea>`s), then insert it;
+   - a **file upload** for the letter → write it, render to a file next to the
+     CV and attach it;
+   - **no letter field at all** → do not write one. Some forms only take a CV.
+     A letter nobody asked for is pure cost.
+   Save the text into `applications.cover_letter_no` / `cover_letter_uk` in the
+   same run, so the record matches what was actually sent. If the run dies after
+   this point, the letter survives for the retry.
 4. **Screenshot + field→value list** — capture a downscaled screenshot of the
    fully-filled form (`assets/screenshot.mjs`), and separately produce a plain
    text list of every field name/label and the value that was entered into it.
    Do this *before* submitting: it is the record of what was sent.
+   By this point the letter is written and placed, so one screenshot covers the
+   whole application — no second pass.
 5. **Submit — do not ask first.** Click the real submit button in the same run.
    **There is no form-approval step.** The user already approved this specific
    job when they pressed "✅ Підтвердити" on the job card — that button is what
@@ -174,10 +195,11 @@ Enkel Søknad alike — sets both fields together:
 - `supabase/functions/generate_application/index.ts` — the primary path since
   2026-07-20: sets `submission_method='agent'` right at row creation
   (`status='pending_manual'`), triggered by the job card's single "✅
-  Підтвердити" (`confirm_job_`) button. The letter-writing poller
-  (`skills/soknad-writing`) advances the row to `status='sending'` once the
-  Søknad is written and sent as an FYI — no manual draft-approval step in
-  between.
+  Підтвердити" (`confirm_job_`) button. From 2026-07-29 the row is advanced to
+  `status='sending'` **mechanically** by `worker/ats_resolver.py` as soon as the
+  job has a usable `external_apply_url` — no letter is written at this stage and
+  no agent wakes for it. Letter writing moved inside the fill run (phase 3b), so
+  nothing is written for an application that never reaches a form.
 - `queueForAgentPipeline()` in `supabase/functions/telegram-bot/index.ts`,
   used by the `auto_apply_`/`queue_agent_`/`retry_app_` button handlers — a
   dormant manual-recovery path, not part of the normal confirm-button flow.

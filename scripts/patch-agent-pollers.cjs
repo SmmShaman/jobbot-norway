@@ -197,16 +197,27 @@ console.log(JSON.stringify({
 `;
 
 const MANUAL_SCRIPT = `${HALT_GUARD}
-Q=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id,job_id,user_id,created_at&status=eq.pending_manual&user_id=eq.${OWNER_USER_ID}&order=created_at.asc" -H "apikey: \${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer \${SUPABASE_SERVICE_KEY}")
+# Owner's rule (2026-07-29): writing the cover letter and filling the form are ONE
+# process, and the letter is written last — see skills/form-filling/SKILL.md phase 3b.
+# So this poller no longer wakes the agent to write letters in advance.
+# Promotion pending_manual -> sending is mechanical and happens in
+# worker/ats_resolver.py; a row that cannot be promoted is missing its form URL,
+# which is the resolver's problem, not something the agent can fix by thinking.
+# The counters stay so the queue is still visible in the logs.
+Q=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id,jobs(external_apply_url)&status=eq.pending_manual&user_id=eq.${OWNER_USER_ID}&order=created_at.asc" -H "apikey: \${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer \${SUPABASE_SERVICE_KEY}")
 case "$Q" in ""|"null") Q="[]";; esac
 node -e "
 const arr = v => (Array.isArray(v) ? v : []);
 const all = arr($Q);
-// One application per wake — the rest is only a counter, see POLICY v6.
-const batch = all.slice(0, 1);
+const withUrl = all.filter(r => (r.jobs || {}).external_apply_url);
 console.log(JSON.stringify({
-  wakeAgent: batch.length > 0,
-  data: { pending_manual: batch, pending_manual_total: all.length }
+  wakeAgent: false,
+  data: {
+    pending_manual_total: all.length,
+    awaiting_promotion: withUrl.length,
+    awaiting_form_url: all.length - withUrl.length,
+    note: 'letters are written inside the fill run, not here'
+  }
 }));
 "
 `;
@@ -238,7 +249,11 @@ ${TURN_BUDGET}
 
 Поля \`awaiting_recon_total\` і \`awaiting_recon_hosts\` — це заявки на незнайомих платформах. Вони чекають рішення власника, бо recon однієї платформи коштує ~6,8M. **Не бери їх у роботу і не роби recon за власною ініціативою.** Виняток один: якщо \`recon_allowed: true\` (власник створив \`/workspace/agent/RECON_ALLOWED\`) — тоді розвідай ОДНУ платформу і, до завершення ходу, ОБОВʼЯЗКОВО збережи \`/workspace/agent/form-scripts/<хост>/profile.json\` і параметризований \`fill.mjs\`, перевіривши його повторним запуском. НІКОЛИ не лишай напрацьоване в \`/tmp\` — його стирає перезбірка контейнера (так згинули 58 скриптів за 22–27.07).
 
-📤 ВІДПРАВЛЕННЯ. Кроку схвалення вже заповненої форми в процесі немає (фаза 5 у SKILL.md): заповни форму → зроби скріншот і список «поле → значення» → одразу натисни submit → постав \`applications.status='sent'\` → надішли скріншот і список у ТЕХНІЧНИЙ бот як квитанцію БЕЗ кнопок. Рядків у \`application_confirmations\` не створюй, інлайн-кнопок не шли і нічого не чекай: користувач схвалив цю вакансію кнопкою «✅ Підтвердити» на картці — саме вона й створила цей рядок.
+✍️ ЛИСТ ПИШЕТЬСЯ ОСТАННІМ, УСЕРЕДИНІ ЦЬОГО Ж ПРОГОНУ. Заповни ВСЕ, крім супровідного листа: контакти, CV, питання роботодавця, телефон. Аж коли решта готова і нічого вирішувати не лишилось — подивись, чого форма просить: текстове поле → напиши лист за \`skills/soknad-writing/SKILL.md\` (спершу перевір ліміт символів) і встав; файл → напиши, збережи файлом і прикріпи поруч із CV; поля для листа немає взагалі → НЕ пиши його. Готовий текст збережи в \`applications.cover_letter_no\`/\`cover_letter_uk\` у цьому ж прогоні.
+
+Причина: лист пише Claude з підписки, і він не має писатися для заявки, яка до форми так і не дійшла. Заповнення першим також викриває акаунт-стіну, CAPTCHA чи мертвий URL ДО того, як за лист заплачено.
+
+📤 ВІДПРАВЛЕННЯ. Кроку схвалення вже заповненої форми в процесі немає (фаза 5 у SKILL.md): форма заповнена разом із листом → скріншот і список «поле → значення» → одразу натисни submit → постав \`applications.status='sent'\` → надішли скріншот і список у ТЕХНІЧНИЙ бот як квитанцію БЕЗ кнопок. Рядків у \`application_confirmations\` не створюй, інлайн-кнопок не шли і нічого не чекай: користувач схвалив цю вакансію кнопкою «✅ Підтвердити» на картці — саме вона й створила цей рядок.
 
 Черга \`confirmed_to_submit\` — це старі підтвердження (до 2026-07-27), картки яких ще живі, і вона має пріоритет над \`sending_to_fill\`. Якщо користувач натисне таку кнопку, перезапусти скрипт заповнення і відправ. Поле \`legacy_awaiting_button\` — лише лічильник для видимості, на нього не реагуй.
 
@@ -248,9 +263,13 @@ ${ROUTING_RULE}`;
 
 const MANUAL_BLOCK = `
 
-${TURN_BUDGET}
+⏹ ЦЕЙ ПОЛЛЕР БІЛЬШЕ НЕ ПИШЕ ЛИСТІВ (${MARKER})
 
-📤 Коли заявка доходить до заповнення форми, агент відправляє її в тому ж прогоні — окремого кроку схвалення заповненої форми в процесі немає (фаза 5 у \`skills/form-filling/SKILL.md\`). Рядків у \`application_confirmations\` не створюй і інлайн-кнопок не надсилай.
+Написання супровідного листа переїхало ВСЕРЕДИНУ прогону заповнення форми і робиться останнім кроком — див. \`skills/form-filling/SKILL.md\`, фаза 3b. Лист більше не пишеться наперед: він коштує підписки, а заявка часто до форми не доходила.
+
+Переведення \`pending_manual\` → \`sending\` тепер механічне, його робить \`worker/ats_resolver.py\`, щойно у вакансії з'являється \`external_apply_url\`. Розуму це не потребує, тож гейт тебе сюди більше не будить (\`wakeAgent:false\` завжди).
+
+Якщо ти все ж отримав це завдання — заверши хід без жодного curl/SQL. Заявка без \`external_apply_url\` чекає на резолвер, а не на тебе.
 
 ${ROUTING_RULE}`;
 

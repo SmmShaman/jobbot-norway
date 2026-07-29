@@ -380,6 +380,38 @@ def resolve_one(
     return None, best_score, tried, searched
 
 
+def promote_ready(db: Supa, dry_run: bool) -> int:
+    """Move pending_manual rows that already have a form URL into the fill queue.
+
+    This used to be an agent's job: it woke up, wrote a cover letter, and set the
+    row to 'sending'. Two things were wrong with that. The letter cost subscription
+    tokens for applications that often never reached a form at all, and the status
+    change itself needs no intelligence whatsoever.
+
+    Owner's rule (2026-07-29): writing the letter and filling the form are one
+    process, and the letter is written last — see skills/form-filling/SKILL.md
+    phase 3b. So this function only moves the row; the agent does everything else
+    in a single run, at submission time.
+    """
+    rows = db.get(
+        "applications",
+        select="id,jobs!inner(id,external_apply_url)",
+        user_id=f"eq.{OWNER_USER_ID}",
+        status="eq.pending_manual",
+        order="created_at.asc",
+        **{"jobs.external_apply_url": "not.is.null"},
+    )
+    for r in rows:
+        print(f"  queue {r['id'][:8]} -> sending  ({(r.get('jobs') or {}).get('external_apply_url', '')[:60]})")
+        if not dry_run:
+            db.patch(
+                "applications",
+                {"status": "sending", "submission_method": "agent"},
+                id=f"eq.{r['id']}",
+            )
+    return len(rows)
+
+
 def tech_notify(text: str) -> None:
     token = os.environ.get("TELEGRAM_TECH_BOT_TOKEN")
     chat = os.environ.get("TELEGRAM_TECH_CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID")
@@ -435,6 +467,10 @@ def main() -> None:
         print(f"reactivated: {len(rows)}")
         return
 
+    promoted = promote_ready(db, args.dry_run)
+    if promoted:
+        print(f"queued for filling: {promoted}")
+
     apps = pick_jobs(db, args.limit, args.statuses)
     cse_cap = int(os.environ.get("CSE_DAILY_CAP", "80"))
     print(f"candidates: {len(apps)} | cse budget left today: {quota_left('cse', cse_cap)}/{cse_cap}")
@@ -469,6 +505,8 @@ def main() -> None:
                 db.patch("applications", {"error_message": note}, id=f"eq.{app['id']}")
 
     summary = f"🔎 ATS-resolver: {found} знайдено, {missed} без форми (з {len(apps)})"
+    if promoted:
+        summary = f"📥 У чергу на заповнення: {promoted}\n" + summary
     if blocked:
         summary += f"; {blocked} відкладено — пошуковий канал недоступний"
     print("\n" + summary)
