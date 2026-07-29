@@ -14,7 +14,24 @@
  * form-approval step ("підтверджувати завжди"): fill and submit in one run, so
  * nothing waits and there is nothing to subtract.
  *
- * ROUTING v4 (2026-07-27, current) applies the owner's second rule: @soknad_bot
+ * POLICY v6 (2026-07-29, current) closes the two leaks measured on 29.07, when
+ * 21.61M tokens bought zero sent applications:
+ *   - a halt guard: while `/workspace/agent/HALTED` exists both gates answer
+ *     `wakeAgent:false` before running a single query. The owner's stop order of
+ *     05:33 was costing ~0.1M every 2 minutes, because the gate knew nothing
+ *     about it and the agent paid for a full context read just to say "стоп-режим
+ *     досі активний";
+ *   - both gates now slice their queue to ONE row and report the rest as a
+ *     counter, so an application can no longer accumulate context behind the
+ *     previous one (the main session overflowed three times in 45 minutes).
+ * The prompt blocks also drop the "скасовує / ПЕРЕКРИВАЄ будь-яку вимогу вище"
+ * phrasing of v4–v5: an instruction that announces it overrides the agent's own
+ * rules reads exactly like a prompt injection, and on 27.07 the agent classified
+ * it as one and refused to work for an hour (5.65M). Policy now lives in
+ * `skills/form-filling/SKILL.md` — a file the agent trusts — and the poller only
+ * points at it.
+ *
+ * ROUTING v4 (2026-07-27, superseded) applies the owner's second rule: @soknad_bot
  * carries ONLY messages that need the user to do something. Everything
  * informational — cover-letter FYIs, submit receipts, manual-apply hand-offs —
  * moves to @vitalljobtechbot, so an actionable card can never be buried under
@@ -24,6 +41,7 @@
  *
  * USAGE (on the VPS):
  *   cd /home/stuar/nanoclaw-v2 && node /home/stuar/Projects/Jobbot-NO/scripts/patch-agent-pollers.cjs
+ *   …same with --dry-run to print the resulting prompts and gates, writing nothing.
  *
  * Idempotent per poller: a poller whose prompt already carries the marker is
  * skipped. Blocks appended by earlier runs are stripped before the current one,
@@ -70,32 +88,42 @@ const DB_PATH =
 const FILL_SERIES = process.env.JOBBOT_FILL_SERIES || 'task-1784787379628-6jph2g';
 const MANUAL_SERIES = process.env.JOBBOT_MANUAL_SERIES || 'task-1784787352236-wrt8oh';
 
-const MARKER = 'CACHE v5 (2026-07-27)';
+const MARKER = 'POLICY v6 (2026-07-29)';
 
 // Appended blocks, oldest first. Everything from the first match onwards is cut
 // before the current block is added.
 const BLOCK_SENTINELS = [
   '\n\n📮 КУДИ СЛАТИ ПІДТВЕРДЖЕННЯ', // patch3-pollers.cjs, 2026-07-26
   '\n\n⏹ ЗАВЕРШУЙ ХІД ОДРАЗУ', // GATE v2
-  '\n\n⏹ АВТОСАБМІТ', // GATE v3 / ROUTING v4
+  '\n\n⏹ АВТОСАБМІТ', // GATE v3 / ROUTING v4 / CACHE v5
+  '\n\n⏹ РЕЖИМ РОБОТИ', // POLICY v6
 ];
 
-const ROUTING_RULE = `📵 МАРШРУТИЗАЦІЯ БОТІВ — ЧИННЕ ПРАВИЛО (${MARKER}). Скасовує будь-яку вимогу вище слати інформаційні повідомлення в головний бот.
+// Both gates start with this. A halt costs zero tokens: no wake, no queries, and
+// the agent never has to explain that it is halted.
+const HALT_GUARD = `#!/bin/bash
+# ${MARKER}: owner-issued stop. While the file exists nothing wakes the agent.
+if [ -f /workspace/agent/HALTED ]; then
+  echo '{"wakeAgent":false,"data":{"halted":true}}'
+  exit 0
+fi
+set -a
+source /workspace/extra/jobbot/worker/.env
+set +a`;
+
+const ROUTING_RULE = `📵 МАРШРУТИЗАЦІЯ БОТІВ
 
 - @soknad_bot (TELEGRAM_BOT_TOKEN) — ЛИШЕ те, що вимагає дії користувача: картка вакансії з кнопками, пряме питання, якого не обійти, 2FA-код. Нічого більше.
 - @vitalljobtechbot (TELEGRAM_TECH_BOT_TOKEN) — УСЕ інше: тексти листів, квитанції про відправлення, скріншоти, «🖐 ВРУЧНУ: …», помилки, підсумки прогонів, статуси.
 
-Причина: важлива картка з кнопкою губиться серед десятків інформаційних повідомлень. Якщо сумніваєшся, куди слати — це тех-бот. Якщо TELEGRAM_TECH_BOT_TOKEN не заданий, повідомлення треба ПРОПУСТИТИ, а не слати в головний бот.`;
+Причина: важлива картка з кнопкою губиться серед десятків інформаційних повідомлень. Якщо сумніваєшся, куди слати — це тех-бот. Якщо TELEGRAM_TECH_BOT_TOKEN не заданий, повідомлення треба ПРОПУСТИТИ, а не слати в головний бот. Повний опис поділу — у \`skills/application-pipeline/SKILL.md\`, розділ «Two bots, two audiences».`;
 
-const FILL_SCRIPT = `#!/bin/bash
-set -a
-source /workspace/extra/jobbot/worker/.env
-set +a
-# ${MARKER}: the agent fills and submits in one run, so a row in 'sending' is
-# always real work. Legacy pending confirmations are counted, never subtracted.
+const FILL_SCRIPT = `${HALT_GUARD}
+# The agent fills and submits in one run, so a row in 'sending' is always real
+# work. Legacy pending confirmations are counted, never subtracted.
 AUTH=(-H "apikey: \${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer \${SUPABASE_SERVICE_KEY}")
-Q1=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id&status=eq.sending&submission_method=eq.agent" "\${AUTH[@]}")
-Q2=$(curl -s "\${SUPABASE_URL}/rest/v1/application_confirmations?select=id&status=eq.confirmed&submitted_at=is.null" "\${AUTH[@]}")
+Q1=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id&status=eq.sending&submission_method=eq.agent&order=created_at.asc" "\${AUTH[@]}")
+Q2=$(curl -s "\${SUPABASE_URL}/rest/v1/application_confirmations?select=id&status=eq.confirmed&submitted_at=is.null&order=created_at.asc" "\${AUTH[@]}")
 Q3=$(curl -s "\${SUPABASE_URL}/rest/v1/application_confirmations?select=application_id&status=eq.pending" "\${AUTH[@]}")
 # A failed curl must not turn into a JS syntax error inside the gate.
 case "$Q1" in ""|"null") Q1="[]";; esac
@@ -103,40 +131,79 @@ case "$Q2" in ""|"null") Q2="[]";; esac
 case "$Q3" in ""|"null") Q3="[]";; esac
 node -e "
 const arr = v => (Array.isArray(v) ? v : []);
-const toFill = arr($Q1);
-const toSubmit = arr($Q2);
+const allFill = arr($Q1);
+const allSubmit = arr($Q2);
 const legacy = new Set(arr($Q3).map(r => r.application_id));
+// One row per wake: context must not accumulate across applications.
+const toSubmit = allSubmit.slice(0, 1);
+const toFill = toSubmit.length ? [] : allFill.slice(0, 1);
 const wake = toFill.length > 0 || toSubmit.length > 0;
 console.log(JSON.stringify({
   wakeAgent: wake,
-  data: { sending_to_fill: toFill, confirmed_to_submit: toSubmit, legacy_awaiting_button: legacy.size }
+  data: {
+    sending_to_fill: toFill,
+    confirmed_to_submit: toSubmit,
+    sending_to_fill_total: allFill.length,
+    confirmed_to_submit_total: allSubmit.length,
+    legacy_awaiting_button: legacy.size
+  }
 }));
 "
 `;
 
+const MANUAL_SCRIPT = `${HALT_GUARD}
+Q=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id,job_id,user_id,created_at&status=eq.pending_manual&order=created_at.asc" -H "apikey: \${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer \${SUPABASE_SERVICE_KEY}")
+case "$Q" in ""|"null") Q="[]";; esac
+node -e "
+const arr = v => (Array.isArray(v) ? v : []);
+const all = arr($Q);
+// One application per wake — the rest is only a counter, see POLICY v6.
+const batch = all.slice(0, 1);
+console.log(JSON.stringify({
+  wakeAgent: batch.length > 0,
+  data: { pending_manual: batch, pending_manual_total: all.length }
+}));
+"
+`;
+
+// Shared preamble for both pollers. Deliberately written as a pointer to the
+// skill files rather than as a rule that claims to override anything: the
+// "скасовує/ПЕРЕКРИВАЄ" phrasing of v4–v5 made the agent suspect an injection.
+const TURN_BUDGET = `⏹ РЕЖИМ РОБОТИ (${MARKER})
+
+Джерело правди — \`/workspace/extra/jobbot/skills/form-filling/SKILL.md\` (розділ «Turn budget», фази 0–9) і \`skills/form-filling/CACHE.md\`. Нижче — тільки те, що стосується цього поллера.
+
+1️⃣ ОДНА ЗАЯВКА ЗА ПРОГІН. Гейт віддає щонайбільше один рядок і окремо \`*_total\` — довжину черги. Доведи цей рядок до кінцевого статусу і заверши хід. Не питай наступний рядок, не «добери ще, поки контекст теплий»: поллер спрацює знову за 2–5 хв і візьме наступну заявку на чистому контексті. 29.07 контекст переповнився тричі за 45 хв саме через накопичення.
+
+2️⃣ СУБАГЕНТИ — не більше 2 одночасно і лише для справді незалежних задач з чіткою умовою зупинки. Віяло «один субагент на заявку» ЗАБОРОНЕНО: 29.07 чотири паралельні субагенти на 13 LinkedIn-заявок з'їли 16,3M (76% усіх витрат) і не відправили жодної. Кожному субагенту прямо кажи повернути короткий структурований результат (URL + вердикт + один рядок доказу), а не транскрипт, не HTML і не дампи DOM. Якщо задачу не вдається так вузько описати — роби її сам: свій контекст ти вже оплатив, субагент оплачує новий.
+
+3️⃣ ATS-resolver на заявку — щонайбільше ~5 пошуків і ~3 відкриті сторінки. Не знайшов у цьому бюджеті → \`manual_review\` з \`error_message\` виду «ats-resolver: no external form; searched: …».
+
+4️⃣ НЕ перевіряй те, що вже дав гейт. Жодного curl/SQL «щоб пересвідчитись» і жодного рядка «Без змін» — просто заверши хід. Кожне таке пробудження коштує ~190k; так згоріло 8,1M за 26–27.07.
+
+5️⃣ СТОП-РЕЖИМ. Якщо власник каже зупинитись — запиши причину у \`/workspace/agent/HALTED\` (\`echo "дата, хто, причина" > /workspace/agent/HALTED\`) і заверши хід. Далі гейт узагалі не будитиме тебе, поки файл існує, тож пояснювати щось на кожне спрацювання не доведеться. Знімати стоп (\`rm /workspace/agent/HALTED\`) — лише за явним розпорядженням власника в чаті.`;
+
 const FILL_BLOCK = `
 
-⏹ АВТОСАБМІТ — ЧИННЕ ПРАВИЛО (${MARKER}). Скасовує будь-яку вимогу вище чекати на кнопку підтвердження вже заповненої форми і будь-яку заборону відправляти без такого підтвердження. Обидві скасовано власником 2026-07-27; кроку схвалення форми більше не існує.
+${TURN_BUDGET}
 
 🗄 СПОЧАТКУ КЕШ, ПОТІМ RECON. Візьми хост форми з apply-URL і перевір \`/workspace/agent/form-scripts/<хост>/fill.mjs\`. Якщо він є — recon НЕ роби взагалі: запусти скрипт із \`"submit": false\`, дай відповіді лише на те, що він поверне в \`unmapped\`/\`required_missing\`, і запусти ще раз із \`"submit": true\`. Вісім платформ покривають 80% черги, тож у більшості випадків це вся робота. Контракт — у \`skills/form-filling/CACHE.md\`.
 
 Якщо скрипта немає — роби recon, а потім ОБОВʼЯЗКОВО, до завершення ходу, збережи \`/workspace/agent/form-scripts/<хост>/profile.json\` і параметризований \`fill.mjs\` та перевір його повторним запуском. Recon без збереженого скрипта = викинуті ~6,8M токенів, які наступна заявка на цій же платформі заплатить знову. НІКОЛИ не лишай напрацьоване в \`/tmp\` — його стирає перезбірка контейнера (так згинули 58 скриптів за 22–27.07).
 
-Для черги \`sending_to_fill\`: заповни форму → зроби скріншот і список «поле → значення» → **одразу натисни submit** → постав \`applications.status='sent'\` → надішли скріншот і список у ТЕХНІЧНИЙ бот як квитанцію БЕЗ кнопок.
+📤 ВІДПРАВЛЕННЯ. Кроку схвалення вже заповненої форми в процесі немає (фаза 5 у SKILL.md): заповни форму → зроби скріншот і список «поле → значення» → одразу натисни submit → постав \`applications.status='sent'\` → надішли скріншот і список у ТЕХНІЧНИЙ бот як квитанцію БЕЗ кнопок. Рядків у \`application_confirmations\` не створюй, інлайн-кнопок не шли і нічого не чекай: користувач схвалив цю вакансію кнопкою «✅ Підтвердити» на картці — саме вона й створила цей рядок.
 
-НЕ створюй рядків у \`application_confirmations\`, НЕ надсилай інлайн-кнопок і НЕ чекай нічого. Користувач уже схвалив цю вакансію кнопкою «✅ Підтвердити» на картці — саме вона й створила цей рядок. Другого підтвердження не існує.
+Черга \`confirmed_to_submit\` — це старі підтвердження (до 2026-07-27), картки яких ще живі, і вона має пріоритет над \`sending_to_fill\`. Якщо користувач натисне таку кнопку, перезапусти скрипт заповнення і відправ. Поле \`legacy_awaiting_button\` — лише лічильник для видимості, на нього не реагуй.
 
-Черга \`confirmed_to_submit\` — це старі підтвердження (до 2026-07-27), картки яких ще живі. Якщо користувач натисне таку кнопку, перезапусти скрипт заповнення і відправ. Поле \`legacy_awaiting_button\` — лише лічильник для видимості, на нього не реагуй.
-
-Якщо \`sending_to_fill\` і \`confirmed_to_submit\` порожні — заверши хід БЕЗ жодного curl/SQL «щоб перевірити» і без рядка «Без змін». Гейт уже зробив усі запити. Кожне таке пробудження коштує ~190k токенів; на них згоріло 8,1M за 26–27.07.
-
-Рядок у \`sending\` тепер завжди означає роботу в процесі або впалий прогін — ніколи не «людина думає». Не лишай заявку в цьому статусі: будь-яка помилка → \`manual_review\` зі скріншотом.
+Рядок у \`sending\` означає роботу в процесі або впалий прогін — ніколи не «людина думає». Не лишай заявку в цьому статусі: будь-яка помилка → \`manual_review\` зі скріншотом.
 
 ${ROUTING_RULE}`;
 
 const MANUAL_BLOCK = `
 
-⏹ АВТОСАБМІТ І МАРШРУТИЗАЦІЯ (${MARKER}). Кроку схвалення заповненої форми більше не існує: коли заявка доходить до заповнення, агент відправляє її одразу, без кнопок і без очікування. Скасовано власником 2026-07-27 — не створюй рядків у \`application_confirmations\` і не надсилай інлайн-кнопок.
+${TURN_BUDGET}
+
+📤 Коли заявка доходить до заповнення форми, агент відправляє її в тому ж прогоні — окремого кроку схвалення заповненої форми в процесі немає (фаза 5 у \`skills/form-filling/SKILL.md\`). Рядків у \`application_confirmations\` не створюй і інлайн-кнопок не надсилай.
 
 ${ROUTING_RULE}`;
 
@@ -156,6 +223,10 @@ const FILL_REPLACEMENTS = [
     'надішли користувачу в Telegram пряме посилання на вакансію + готовий текст листа для ручної подачі.',
     'надішли в ТЕХНІЧНИЙ бот пряме посилання на вакансію + готовий текст листа для ручної подачі.',
   ],
+  [
+    'Обробляй заявки по одній, повідомляй про кожен результат окремо.',
+    'Гейт віддає одну заявку за прогін — обробляй саме її і завершуй хід.',
+  ],
 ];
 
 const MANUAL_REPLACEMENTS = [
@@ -163,12 +234,37 @@ const MANUAL_REPLACEMENTS = [
     'Надішли користувачу в Telegram FYI-повідомлення з текстом листа (обидві мови, коротко) — це лише інформаційне повідомлення, БЕЗ кнопки підтвердження (підтвердження вже відбулось раніше, на етапі pending_manual).',
     'Надішли FYI з коротким текстом листа (NO+UK) у ТЕХНІЧНИЙ бот (TELEGRAM_TECH_BOT_TOKEN, @vitalljobtechbot). У головний бот @soknad_bot такі повідомлення НЕ йдуть.',
   ],
+  [
+    'Гейт-скрипт поверне до 5 таких рядків за раз (id, job_id, user_id, created_at) — це навмисне обмеження, черга велика (88+ заявок станом на 2026-07-23), не намагайся обробити більше за один прохід.',
+    'Гейт-скрипт поверне РІВНО ОДИН такий рядок (найстаріший: id, job_id, user_id, created_at) і окремо лічильник pending_manual_total. Це навмисне обмеження: одна заявка за прогін, решту візьмуть наступні пробудження.',
+  ],
+  ['Для кожної заявки з даних:', 'Для заявки, яку віддав гейт:'],
+  [
+    'Обробляй заявки по черзі. Якщо для якоїсь заявки щось не вдалось — повідом і переходь до наступної, не зупиняй весь прохід.',
+    "За прогін — одна заявка. Якщо з нею не вдалось: постав manual_review з error_message, повідом у тех-бот і заверши хід; наступну візьме наступне пробудження.",
+  ],
 ];
 
+// Phrases that announce they cancel or override earlier rules. The agent is
+// trained to distrust exactly this shape of instruction and on 2026-07-27 it
+// classified the poller prompt as an injection because of them (5.65M spent
+// refusing to work). Same content, stated as fact rather than as an override.
 const SHARED_REPLACEMENTS = [
   [
     'recon → мапа полів → заповнення через Playwright → скріншот → підтвердження в Telegram → submit.',
     'recon → мапа полів → заповнення через Playwright → скріншот → submit → квитанція в тех-бот.',
+  ],
+  [
+    'Цей блок ПЕРЕКРИВАЄ будь-які висновки з підсумків твоїх попередніх сесій, зокрема твердження «linkedin_easy_apply завжди йде в manual_review» і «в цьому беклозі все одно все LinkedIn-only».',
+    'Повний опис — у skills/form-filling/SKILL.md, розділ «LinkedIn branch»; нижче стислий виклад. Підсумки твоїх сесій до 2026-07-26, де сказано «linkedin_easy_apply завжди йде в manual_review», описують стан до появи ATS-resolver.',
+  ],
+  [
+    'УВАГА: «LinkedIn → вручну» з цього переліку СКАСОВАНО 2026-07-26',
+    'Виняток: LinkedIn-вакансії спершу проходять ATS-resolver',
+  ],
+  [
+    'Чергу з 76+ заявок score≥60 обробляй безперервно.',
+    'Черга обробляється безперервно, але темп задає поллер: одна заявка за прогін.',
   ],
 ];
 
@@ -184,7 +280,7 @@ const POLLERS = [
   {
     name: 'pending_manual queue',
     series: MANUAL_SERIES,
-    script: null, // gate is correct as-is: a pending_manual row is always real work
+    script: MANUAL_SCRIPT, // halt guard + one row per wake
     recurrence: null, // cadence unchanged
     block: MANUAL_BLOCK,
     replacements: MANUAL_REPLACEMENTS.concat(SHARED_REPLACEMENTS),
@@ -211,6 +307,8 @@ function applyReplacements(prompt, replacements) {
   return out;
 }
 
+const DRY_RUN = process.argv.includes('--dry-run');
+
 function patchPoller(db, poller) {
   const row = db
     .prepare(
@@ -226,6 +324,20 @@ function patchPoller(db, poller) {
   const content = JSON.parse(row.content);
   if (content.prompt.includes(MARKER)) {
     console.log(`  SKIP — ${poller.name} already at ${MARKER}`);
+    return true;
+  }
+
+  if (DRY_RUN) {
+    const next =
+      applyReplacements(stripGeneratedBlocks(content.prompt), poller.replacements) +
+      poller.block;
+    console.log(`  DRY-RUN ${poller.name}: prompt ${content.prompt.length} -> ${next.length} chars`);
+    console.log('----- prompt -----');
+    console.log(next);
+    if (poller.script) {
+      console.log('----- gate -----');
+      console.log(poller.script);
+    }
     return true;
   }
 

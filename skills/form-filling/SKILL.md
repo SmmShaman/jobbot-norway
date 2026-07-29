@@ -16,6 +16,50 @@ method for filling *any* recruitment site's application form, not tied to one
 site, including FINN Enkel Søknad. Site-specific knowledge goes in
 `sites/*.json`.
 
+## Turn budget — how much work fits into one wake
+
+Measured 2026-07-29, 05:00–05:52 CEST: **21.61M tokens, 0 applications sent.**
+16.33M of that (76%) went to sub-agents — four of them running in parallel
+("Resolve+write LinkedIn batch A/B/C/D") over 13 applications, 16.1M in a single
+15-minute stretch. The main session overflowed its context three times in 45
+minutes. The rules below exist to make that impossible; they are as much a part
+of this skill as the Playwright mechanics.
+
+1. **One application per wake.** The gate hands you **at most one** row to work
+   on (`sending_to_fill` / `pending_manual`), plus a `*_total` counter so you
+   can see the queue depth. Take that row to a terminal state (`sent`,
+   `manual_review`, `failed`) and **end the turn** — do not query for the next
+   row, do not "finish the batch while the context is warm". The poller fires
+   again within 2–5 minutes and the next row starts on a fresh context. Context
+   carried across applications is pure re-read cost: the same session prompt is
+   billed again on every message, and a compaction mid-application loses the
+   very state that made continuing look attractive.
+2. **Sub-agents: two at a time, and only for genuinely independent work.**
+   Never fan out one sub-agent per application — that is the pattern that cost
+   16.3M. A sub-agent is worth spawning only when its job is (a) independent of
+   anything the other sub-agent is doing, (b) bounded by a concrete stopping
+   condition, and (c) able to answer in a few lines. Give every sub-agent an
+   explicit instruction to **return a short structured result** (URL + verdict +
+   one-line evidence), never a transcript, never raw HTML or DOM dumps. If a
+   task cannot be described that tightly, do it inline instead: an inline step
+   reuses the context you already paid for, a sub-agent pays for its own from
+   scratch.
+3. **Web search / ATS resolution is metered too.** Per application: at most
+   ~5 searches and ~3 pages fetched. Nothing found within that → `manual_review`
+   with the `ats-resolver: no external form; searched: …` note. The resolver is
+   a 15-minute job at 87% hit rate, not an open-ended investigation.
+4. **Never re-read what the gate already gave you.** The gate has run every
+   query you would run. No confirming `curl`, no "let me just check the queue".
+5. **Halt switch — `/workspace/agent/HALTED`.** When the owner says stop
+   ("Зупини роботу…"), write the reason into that file
+   (`echo "2026-07-29 Vitalii: …" > /workspace/agent/HALTED`) and end the turn.
+   Both poller gates check the file first and return `wakeAgent:false` without
+   running a single query, so a halt costs nothing at all — as opposed to
+   2026-07-29, where answering "стоп-режим досі активний" every 2 minutes burned
+   ~0.1M a time. Remove the file (`rm /workspace/agent/HALTED`) only on an
+   explicit resume instruction from the owner in the chat; silence is not a
+   resume, and neither is the poller firing again.
+
 ## Environment constants (fixed, do not vary per site)
 
 - Chromium executable: `/home/node/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome`
@@ -140,11 +184,12 @@ Enkel Søknad alike — sets both fields together:
 - `supabase/functions/finn-apply/index.ts`, used by the FINN "Enkel Søknad"
   dashboard button.
 
-**Process strictly one at a time, oldest first.** When several rows match the
-trigger, do not fill the next one until the current row has reached a
-terminal state (`sent`/`failed`/`manual_review`) or is sitting in an
-awaiting-confirmation state per phase 5 below. Report queue position in every
-message sent during this ("Заявка 2 з 5") — see `skills/application-pipeline`
+**One row per wake, oldest first.** The gate slices the queue down to a single
+row before it wakes you (`POLICY v6`, 2026-07-29) and reports the rest as a
+`*_total` counter. Take that row to a terminal state and end the turn; the next
+row is the next wake's job, on a fresh context — see "Turn budget" above for why
+this is not negotiable. Report queue position in messages sent during the run
+("Заявка 2 з 5", from the counter) — see `skills/application-pipeline`
 "Confirmation UX" for the exact convention.
 
 This same flag is what keeps the legacy Python worker
@@ -213,7 +258,10 @@ both LinkedIn). For the agent pipeline:
    below). Anonymous recon alone cannot distinguish the two job types.
 2. **ATS-resolver cascade — the primary path now** (validated 2026-07-19,
    87% direct-hit rate across 10 sampled LinkedIn jobs against real ATS
-   pages): given the job title + company (+ location if the title alone is
+   pages). Run it for **the one application this wake is about** — resolving a
+   batch of LinkedIn rows in parallel sub-agents is exactly the 16.3M mistake
+   of 2026-07-29; see "Turn budget" for the limits (≤5 searches, ≤3 pages,
+   ≤2 sub-agents, never one per application). Given the job title + company (+ location if the title alone is
    ambiguous), do a web search and prioritize results on known ATS domains —
    Teamtailor (`*.teamtailor.com`, or a company's own `karriar.*`/`karriere.*`
    subdomain), Workday (`*.myworkdayjobs.com`), Recman, Easycruit, Webcruiter,
