@@ -88,7 +88,7 @@ const DB_PATH =
 const FILL_SERIES = process.env.JOBBOT_FILL_SERIES || 'task-1784787379628-6jph2g';
 const MANUAL_SERIES = process.env.JOBBOT_MANUAL_SERIES || 'task-1784787352236-wrt8oh';
 
-const MARKER = 'POLICY v6.1 (2026-07-29)';
+const MARKER = 'POLICY v7 (2026-07-29)';
 
 // Two users are live in production. The agent is only allowed to write letters
 // and fill forms for Vitalii — Natalia's rows must go to manual_review by hand
@@ -132,7 +132,12 @@ const FILL_SCRIPT = `${HALT_GUARD}
 # The agent fills and submits in one run, so a row in 'sending' is always real
 # work. Legacy pending confirmations are counted, never subtracted.
 AUTH=(-H "apikey: \${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer \${SUPABASE_SERVICE_KEY}")
-Q1=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id&status=eq.sending&submission_method=eq.agent&user_id=eq.${OWNER_USER_ID}&order=created_at.asc" "\${AUTH[@]}")
+# Which platforms already have a cached fill script. Recon of a NEW platform costs
+# ~6.8M tokens, so it must be a decision the owner makes, not a side effect of a
+# row reaching the queue. Drop /workspace/agent/RECON_ALLOWED to let one through.
+CACHED=$(ls -1 /workspace/agent/form-scripts 2>/dev/null | tr '\\n' ' ')
+RECON_OK=0; [ -f /workspace/agent/RECON_ALLOWED ] && RECON_OK=1
+Q1=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id,jobs!inner(external_apply_url)&status=eq.sending&submission_method=eq.agent&user_id=eq.${OWNER_USER_ID}&order=created_at.asc" "\${AUTH[@]}")
 Q2=$(curl -s "\${SUPABASE_URL}/rest/v1/application_confirmations?select=id&status=eq.confirmed&submitted_at=is.null&order=created_at.asc" "\${AUTH[@]}")
 Q3=$(curl -s "\${SUPABASE_URL}/rest/v1/application_confirmations?select=application_id&status=eq.pending" "\${AUTH[@]}")
 # A failed curl must not turn into a JS syntax error inside the gate.
@@ -144,16 +149,28 @@ const arr = v => (Array.isArray(v) ? v : []);
 const allFill = arr($Q1);
 const allSubmit = arr($Q2);
 const legacy = new Set(arr($Q3).map(r => r.application_id));
+const cached = new Set('$CACHED'.trim().split(/\\s+/).filter(Boolean));
+const reconOk = '$RECON_OK' === '1';
+const host = u => { try { return new URL(u).hostname.replace(/^www\\./, ''); } catch (e) { return ''; } };
+// A row is workable when its form host already has a cached script. Anything
+// else would mean recon, which is the single most expensive thing the agent does.
+const ready = allFill.filter(r => cached.has(host((r.jobs || {}).external_apply_url)));
+const uncached = allFill.filter(r => !ready.includes(r));
+const uncachedHosts = [...new Set(uncached.map(r => host((r.jobs || {}).external_apply_url)).filter(Boolean))];
 // One row per wake: context must not accumulate across applications.
 const toSubmit = allSubmit.slice(0, 1);
-const toFill = toSubmit.length ? [] : allFill.slice(0, 1);
+const pool = reconOk ? allFill : ready;
+const toFill = toSubmit.length ? [] : pool.slice(0, 1);
 const wake = toFill.length > 0 || toSubmit.length > 0;
 console.log(JSON.stringify({
   wakeAgent: wake,
   data: {
     sending_to_fill: toFill,
     confirmed_to_submit: toSubmit,
-    sending_to_fill_total: allFill.length,
+    ready_cached_total: ready.length,
+    awaiting_recon_total: uncached.length,
+    awaiting_recon_hosts: uncachedHosts.slice(0, 12),
+    recon_allowed: reconOk,
     confirmed_to_submit_total: allSubmit.length,
     legacy_awaiting_button: legacy.size
   }
@@ -197,9 +214,9 @@ const FILL_BLOCK = `
 
 ${TURN_BUDGET}
 
-🗄 СПОЧАТКУ КЕШ, ПОТІМ RECON. Візьми хост форми з apply-URL і перевір \`/workspace/agent/form-scripts/<хост>/fill.mjs\`. Якщо він є — recon НЕ роби взагалі: запусти скрипт із \`"submit": false\`, дай відповіді лише на те, що він поверне в \`unmapped\`/\`required_missing\`, і запусти ще раз із \`"submit": true\`. Вісім платформ покривають 80% черги, тож у більшості випадків це вся робота. Контракт — у \`skills/form-filling/CACHE.md\`.
+🗄 ТІЛЬКИ КЕШ. Гейт будить тебе лише на заявки, у яких хост форми вже має \`/workspace/agent/form-scripts/<хост>/fill.mjs\`. Запусти скрипт із \`"submit": false\`, дай відповіді лише на те, що він поверне в \`unmapped\`/\`required_missing\`, і запусти ще раз із \`"submit": true\`. Recon робити НЕ треба — його вже зроблено. Контракт — у \`skills/form-filling/CACHE.md\`.
 
-Якщо скрипта немає — роби recon, а потім ОБОВʼЯЗКОВО, до завершення ходу, збережи \`/workspace/agent/form-scripts/<хост>/profile.json\` і параметризований \`fill.mjs\` та перевір його повторним запуском. Recon без збереженого скрипта = викинуті ~6,8M токенів, які наступна заявка на цій же платформі заплатить знову. НІКОЛИ не лишай напрацьоване в \`/tmp\` — його стирає перезбірка контейнера (так згинули 58 скриптів за 22–27.07).
+Поля \`awaiting_recon_total\` і \`awaiting_recon_hosts\` — це заявки на незнайомих платформах. Вони чекають рішення власника, бо recon однієї платформи коштує ~6,8M. **Не бери їх у роботу і не роби recon за власною ініціативою.** Виняток один: якщо \`recon_allowed: true\` (власник створив \`/workspace/agent/RECON_ALLOWED\`) — тоді розвідай ОДНУ платформу і, до завершення ходу, ОБОВʼЯЗКОВО збережи \`/workspace/agent/form-scripts/<хост>/profile.json\` і параметризований \`fill.mjs\`, перевіривши його повторним запуском. НІКОЛИ не лишай напрацьоване в \`/tmp\` — його стирає перезбірка контейнера (так згинули 58 скриптів за 22–27.07).
 
 📤 ВІДПРАВЛЕННЯ. Кроку схвалення вже заповненої форми в процесі немає (фаза 5 у SKILL.md): заповни форму → зроби скріншот і список «поле → значення» → одразу натисни submit → постав \`applications.status='sent'\` → надішли скріншот і список у ТЕХНІЧНИЙ бот як квитанцію БЕЗ кнопок. Рядків у \`application_confirmations\` не створюй, інлайн-кнопок не шли і нічого не чекай: користувач схвалив цю вакансію кнопкою «✅ Підтвердити» на картці — саме вона й створила цей рядок.
 
