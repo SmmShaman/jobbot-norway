@@ -135,10 +135,22 @@ AUTH=(-H "apikey: \${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer \${SUPABAS
 # Which platforms already have a cached fill script. Recon of a NEW platform costs
 # ~6.8M tokens, so it must be a decision the owner makes, not a side effect of a
 # row reaching the queue. Drop /workspace/agent/RECON_ALLOWED to let one through.
-# A directory is not a cache — only a runnable fill.mjs counts. As of 2026-07-29
-# three platforms have a profile.json and none has fill.mjs, so this correctly
-# resolves to "nothing is self-service yet".
-CACHED=$(for d in /workspace/agent/form-scripts/*/; do [ -f "$d/fill.mjs" ] && basename "$d"; done 2>/dev/null | tr '\\n' ' ')
+# What the agent already knows about a platform. Two levels, both usable:
+#   fill.mjs     — a runnable script, the cheap case
+#   profile.json — a recon map (field labels, wizard steps, gotchas). Filling from
+#                  a map costs far less than recon from zero, and the easycruit
+#                  profile explicitly generalises across every subdomain.
+# A profile routed to manual_review (webcruiter: account wall, no guest apply) is
+# NOT workable — waking for it would only produce a status change.
+CACHED=$(for d in /workspace/agent/form-scripts/*/; do
+  n=$(basename "$d")
+  if [ -f "$d/fill.mjs" ]; then
+    echo "$n"
+  elif [ -f "$d/profile.json" ] && ! grep -q '"strategy"[[:space:]]*:[[:space:]]*"manual_review"' "$d/profile.json"; then
+    echo "$n"
+  fi
+done 2>/dev/null | tr '\\n' ' ')
+SCRIPTED=$(for d in /workspace/agent/form-scripts/*/; do [ -f "$d/fill.mjs" ] && basename "$d"; done 2>/dev/null | tr '\\n' ' ')
 RECON_OK=0; [ -f /workspace/agent/RECON_ALLOWED ] && RECON_OK=1
 Q1=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id,jobs!inner(external_apply_url)&status=eq.sending&submission_method=eq.agent&user_id=eq.${OWNER_USER_ID}&order=created_at.asc" "\${AUTH[@]}")
 Q2=$(curl -s "\${SUPABASE_URL}/rest/v1/application_confirmations?select=id&status=eq.confirmed&submitted_at=is.null&order=created_at.asc" "\${AUTH[@]}")
@@ -161,12 +173,22 @@ const arr = v => (Array.isArray(v) ? v : []);
 const allFill = arr($Q1);
 const allSubmit = arr($Q2);
 const legacy = new Set(arr($Q3).map(r => r.application_id));
-const cached = new Set('$CACHED'.trim().split(/\\s+/).filter(Boolean));
+const dirs = '$CACHED'.trim().split(/\\s+/).filter(Boolean);
+const scripted = '$SCRIPTED'.trim().split(/\\s+/).filter(Boolean);
 const reconOk = '$RECON_OK' === '1';
 const host = u => { try { return new URL(u).hostname.replace(/^www\\./, ''); } catch (e) { return ''; } };
-// A row is workable when its form host already has a cached script. Anything
-// else would mean recon, which is the single most expensive thing the agent does.
-const ready = allFill.filter(r => cached.has(host((r.jobs || {}).external_apply_url)));
+// Match by suffix, not equality: every employer on easycruit gets its own
+// subdomain (ostre-toten.easycruit.com) while the form engine — and therefore the
+// cached knowledge — is shared. Exact matching would have made the cache useless
+// for exactly the platform that covers a third of the queue.
+const covers = (list, h) => !!h && list.some(d => {
+  const base = d.replace(/^\\*\\./, '');
+  return h === base || h.endsWith('.' + base);
+});
+// A row is workable when the agent already has knowledge of its form host —
+// a script, or at least a recon map. Anything else would mean recon from zero,
+// which is the single most expensive thing the agent does.
+const ready = allFill.filter(r => covers(dirs, host((r.jobs || {}).external_apply_url)));
 const uncached = allFill.filter(r => !ready.includes(r));
 const uncachedHosts = [...new Set(uncached.map(r => host((r.jobs || {}).external_apply_url)).filter(Boolean))];
 const cap = Number((arr($Q4)[0] || {}).max_applications_per_day) || 5;
@@ -182,6 +204,9 @@ console.log(JSON.stringify({
   data: {
     sending_to_fill: toFill,
     confirmed_to_submit: toSubmit,
+    has_fill_script: toFill.length
+      ? covers(scripted, host((toFill[0].jobs || {}).external_apply_url))
+      : null,
     sent_today: sentToday,
     daily_cap: cap,
     daily_cap_reached: capReached,
@@ -245,7 +270,12 @@ const FILL_BLOCK = `
 
 ${TURN_BUDGET}
 
-🗄 ТІЛЬКИ КЕШ. Гейт будить тебе лише на заявки, у яких хост форми вже має \`/workspace/agent/form-scripts/<хост>/fill.mjs\`. Запусти скрипт із \`"submit": false\`, дай відповіді лише на те, що він поверне в \`unmapped\`/\`required_missing\`, і запусти ще раз із \`"submit": true\`. Recon робити НЕ треба — його вже зроблено. Контракт — у \`skills/form-filling/CACHE.md\`.
+🗄 ТІЛЬКИ ЗНАЙОМІ ПЛАТФОРМИ. Гейт будить тебе лише тоді, коли про хост форми вже щось відомо в \`/workspace/agent/form-scripts/\`. Дивись поле \`has_fill_script\`:
+
+- \`true\` — є готовий \`fill.mjs\`. Запусти його з \`"submit": false\`, дай відповіді лише на те, що він поверне в \`unmapped\`/\`required_missing\`, потім \`"submit": true\`. Контракт — у \`CACHE.md\`.
+- \`false\` — скрипта немає, але Є \`profile.json\` — карта форми з recon: підписи полів, кроки візарда, пастки. Заповнюй ЗА НЕЮ, а не з нуля, і до кінця ходу збережи \`fill.mjs\`, щоб наступного разу було \`true\`.
+
+Каталог named за хостом форми, і збіг перевіряється за суфіксом: \`ostre-toten.easycruit.com\` обслуговує профіль \`easycruit.com\` — у easycruit кожен роботодавець має свій піддомен, а рушій форми спільний. Не роби recon для нового піддомену знайомої платформи.
 
 Поля \`awaiting_recon_total\` і \`awaiting_recon_hosts\` — це заявки на незнайомих платформах. Вони чекають рішення власника, бо recon однієї платформи коштує ~6,8M. **Не бери їх у роботу і не роби recon за власною ініціативою.** Виняток один: якщо \`recon_allowed: true\` (власник створив \`/workspace/agent/RECON_ALLOWED\`) — тоді розвідай ОДНУ платформу і, до завершення ходу, ОБОВʼЯЗКОВО збережи \`/workspace/agent/form-scripts/<хост>/profile.json\` і параметризований \`fill.mjs\`, перевіривши його повторним запуском. НІКОЛИ не лишай напрацьоване в \`/tmp\` — його стирає перезбірка контейнера (так згинули 58 скриптів за 22–27.07).
 
