@@ -33,7 +33,12 @@ GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
 # projects were draining together, so job analysis lives on its own pools now.
 GROQ_MODEL = 'openai/gpt-oss-120b'
 GROQ_FALLBACK_MODEL = 'openai/gpt-oss-20b'
-GROQ_LAST_RESORT_MODEL = 'llama-3.1-8b-instant'
+# llama-3.1-8b-instant was the last resort until 2026-07-29, when it turned out its
+# 6000 TPM ceiling sits below a single one of our requests (6221-7350 measured), so
+# every fallback ended in 413. Gemini takes that slot: different provider, different
+# quota, and jobbot now has its own Google project rather than sharing portfolio's.
+GEMINI_MODEL = os.environ.get('GEMINI_ANALYSIS_MODEL', 'gemini-2.0-flash-lite')
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 # gpt-oss models reason before answering; without an explicit effort cap they
 # spend the whole completion budget on hidden reasoning and return empty text.
 GROQ_REASONING_EFFORT = 'low'
@@ -138,35 +143,25 @@ HARD REQUIREMENT GATE (CRITICAL — check this FIRST, before scoring):
   загальних управлінських навичок", is CORRECT and preferred over padding with
   unrelated buzzwords pulled from the candidate's general summary.
 
-SCORING METHOD (follow the steps — do not eyeball a number):
-Measured 2026-07-29: of 211 jobs scored 80+, **164 got exactly 85**. A score that
-lands on the same number for three quarters of all jobs carries no information and
-makes every downstream threshold meaningless. Compute it, don't feel it.
-
-1. Extract the employer's requirements as discrete items (3-8 of them). Count = R.
-2. Judge each item against the profile:
-   - MET      — direct evidence; you can name the role and period that proves it.
-   - PARTIAL  — only transferable or adjacent experience, no direct evidence.
-   - MISSING  — nothing in the profile supports it.
-3. base = round(100 * (MET + 0.4 * PARTIAL) / R)
+SCORING METHOD (compute it, do not eyeball it):
+1. List the employer's requirements as 3-8 discrete items. Count = R.
+2. Mark each: MET (direct evidence — you can name the role/period), PARTIAL
+   (transferable only), MISSING (nothing supports it).
+3. score = round(100 * (MET + 0.4 * PARTIAL) / R)
 4. Apply every cap that fits, lowest wins:
-   - HARD REQUIREMENT GATE triggered (see above) -> max 35
-   - the job's core daily duty needs formal training/licence the candidate lacks -> max 45
-   - fluent Norwegian required and the profile does not evidence it -> max 55
-   - the profile's matching experience is a single item and everything else is MISSING -> max 50
-5. The result is the score. Do not round it toward a "nice" number.
+   - hard requirement gate above triggered -> max 35
+   - core daily duty needs training/licence the candidate lacks -> max 45
+   - fluent Norwegian required, profile does not evidence it -> max 55
+   - only one requirement MET, rest MISSING -> max 50
+5. Do not round toward a "nice" number.
 
-CALIBRATION (this is a requirement, not a hint):
-- 90-100 is for a candidate who could start tomorrow with no gaps at all. It is rare.
-  If you have never produced one, that is expected — do not manufacture one.
-- 80-89 means every significant requirement is MET. Reserve it.
-- 60-79 means a real but incomplete match — this is where a good candidate usually lands.
-- 40-59 means transferable skills only.
-- Below 40 means the candidate should not apply.
-- In a normal batch most jobs land below 60. If your scores cluster in one band, you are
-  describing the job, not comparing it to this specific candidate.
-- State the tally in the first line of the "analysis" field, e.g.
-  "Оцінка: 3/7 вимог виконано, 2 частково → 49". This makes the number auditable.
+CALIBRATION (requirement, not a hint):
+90-100 could start tomorrow with no gaps — rare, never manufacture one.
+80-89 every significant requirement MET. 60-79 real but incomplete match.
+40-59 transferable skills only. Below 40 should not apply.
+Most jobs in a batch land below 60. Scores clustering in one band mean you are
+describing the job instead of comparing it to this candidate.
+Open the "analysis" field with the tally, e.g. "Оцінка: 3/7 вимог виконано, 2 частково → 49".
 
 ANALYSIS FORMAT (CRITICAL):
 The "analysis" field MUST use this EXACT structure — cons FIRST, then pros:
@@ -421,32 +416,48 @@ Title: {job['title']}
 Company: {job['company']}
 Location: {job.get('location', 'Unknown')}
 
-{job.get('description', 'No description available')}
+{(job.get('description') or 'No description available')[:4500]}
 """
 
     system_message = f'You are a helpful HR assistant that outputs strictly valid JSON. Write all text content in {lang_full} language.'
 
     # Try primary model (3 retries), then fallback (2 retries)
     models = [
-        (GROQ_MODEL, 3),
-        (GROQ_FALLBACK_MODEL, 2),
-        (GROQ_LAST_RESORT_MODEL, 2),
+        ('groq', GROQ_MODEL, 3),
+        ('groq', GROQ_FALLBACK_MODEL, 2),
     ]
+    if GEMINI_API_KEY:
+        models.append(('gemini', GEMINI_MODEL, 2))
 
-    for model, max_retries in models:
-        url = "https://api.groq.com/openai/v1/chat/completions"
+    for provider, model, max_retries in models:
+        is_last = (provider, model) == (models[-1][0], models[-1][1])
 
         for attempt in range(max_retries + 1):
             try:
-                response = await client.post(
-                    url,
-                    headers={
-                        'Content-Type': 'application/json',
-                        'Authorization': f'Bearer {GROQ_API_KEY}'
-                    },
-                    json=build_groq_payload(model, system_message, user_message),
-                    timeout=60.0
-                )
+                if provider == 'groq':
+                    response = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={
+                            'Content-Type': 'application/json',
+                            'Authorization': f'Bearer {GROQ_API_KEY}'
+                        },
+                        json=build_groq_payload(model, system_message, user_message),
+                        timeout=60.0
+                    )
+                else:
+                    response = await client.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                        headers={'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY},
+                        json={
+                            'systemInstruction': {'parts': [{'text': system_message}]},
+                            'contents': [{'role': 'user', 'parts': [{'text': user_message}]}],
+                            'generationConfig': {
+                                'temperature': 0.3,
+                                'responseMimeType': 'application/json',
+                            },
+                        },
+                        timeout=90.0
+                    )
 
                 if response.status_code in (503, 429) and attempt < max_retries:
                     wait = min(2 ** attempt * 5, 60)
@@ -455,7 +466,7 @@ Location: {job.get('location', 'Unknown')}
                     continue
 
                 if response.status_code in (503, 429) and attempt >= max_retries:
-                    if model != GROQ_LAST_RESORT_MODEL:
+                    if not is_last:
                         print(f"   🔄 {model} unavailable after {max_retries + 1} attempts, falling back...")
                     break
 
@@ -464,12 +475,17 @@ Location: {job.get('location', 'Unknown')}
 
                 data = response.json()
 
-                text_content = data['choices'][0]['message']['content']
+                if provider == 'groq':
+                    text_content = data['choices'][0]['message']['content']
+                    usage = data.get('usage', {})
+                    tokens_in = usage.get('prompt_tokens', 0)
+                    tokens_out = usage.get('completion_tokens', 0)
+                else:
+                    text_content = data['candidates'][0]['content']['parts'][0]['text']
+                    usage = data.get('usageMetadata', {})
+                    tokens_in = usage.get('promptTokenCount', 0)
+                    tokens_out = usage.get('candidatesTokenCount', 0)
                 content = json.loads(text_content)
-
-                usage = data.get('usage', {})
-                tokens_in = usage.get('prompt_tokens', 0)
-                tokens_out = usage.get('completion_tokens', 0)
 
                 price_in, price_out = MODEL_PRICES.get(model, (PRICE_INPUT, PRICE_OUTPUT))
                 cost = (tokens_in * price_in) + (tokens_out * price_out)
@@ -513,7 +529,7 @@ Location: {job.get('location', 'Unknown')}
                     print(f"   ⏳ {model} timeout, retry {attempt + 1}/{max_retries} in {wait}s...")
                     await asyncio.sleep(wait)
                     continue
-                if model != GROQ_LAST_RESORT_MODEL:
+                if not is_last:
                     print(f"   🔄 {model} timeout after {max_retries + 1} attempts, falling back...")
                 break
             except json.JSONDecodeError as e:
@@ -920,7 +936,7 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                     print(f"   ❌ {job['title'][:40]} | Error: {result['error']}")
 
                 # Rate limiting for Groq API
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(5.0)
 
             if filtered_count > 0:
                 print(f"   🔕 Filtered (no card, score < {card_notify_min_score}): {filtered_count} jobs — see evening digest")
@@ -1131,7 +1147,7 @@ async def reanalyze_career_recent(days: int = 3, user_id: Optional[str] = None):
                     print(f"   {arrow} {job['title'][:40]}: {old_score}% -> {result['score']}%")
                 else:
                     print(f"   ❌ {job['title'][:40]} | Error: {result['error']}")
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(5.0)
 
     print("✅ Re-analysis complete")
 
