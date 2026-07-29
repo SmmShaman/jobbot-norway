@@ -342,6 +342,9 @@ function applyReplacements(prompt, replacements) {
 }
 
 const DRY_RUN = process.argv.includes('--dry-run');
+// Re-apply even when the prompt already carries the marker — for when the gate
+// script changed but the policy text did not.
+const FORCE = process.argv.includes('--force');
 
 function patchPoller(db, poller) {
   const row = db
@@ -356,7 +359,7 @@ function patchPoller(db, poller) {
   }
 
   const content = JSON.parse(row.content);
-  if (content.prompt.includes(MARKER)) {
+  if (content.prompt.includes(MARKER) && !FORCE) {
     console.log(`  SKIP — ${poller.name} already at ${MARKER}`);
     return true;
   }
