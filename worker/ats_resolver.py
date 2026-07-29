@@ -412,6 +412,46 @@ def promote_ready(db: Supa, dry_run: bool) -> int:
     return len(rows)
 
 
+def sweep_stale(db: Supa, dry_run: bool, hours: int) -> int:
+    """Get unresolvable applications out of the queue instead of letting them pile up.
+
+    Owner's rule (2026-07-29): if something cannot be resolved, skip it and move on.
+    A row with no form URL is waiting on a search channel that may be down for days
+    (Google's project is AUP-flagged, DuckDuckGo rate-limits), and a queue full of
+    rows nobody can act on hides the ones that are actually workable.
+
+    They are not deleted — manual_review keeps them visible and the Telegram card
+    still works, so the owner can push any of them through by hand.
+    """
+    from datetime import datetime, timedelta, timezone as _tz
+
+    cutoff = (datetime.now(_tz.utc) - timedelta(hours=hours)).isoformat()
+    rows = db.get(
+        "applications",
+        select="id,created_at,jobs!inner(title,company,external_apply_url)",
+        user_id=f"eq.{OWNER_USER_ID}",
+        status="eq.pending_manual",
+        created_at=f"lt.{cutoff}",
+        **{"jobs.external_apply_url": "is.null"},
+    )
+    for r in rows:
+        job = r.get("jobs") or {}
+        print(f"  skip {r['id'][:8]} — {(job.get('company') or '?')[:20]} / {(job.get('title') or '')[:40]}")
+        if not dry_run:
+            db.patch(
+                "applications",
+                {
+                    "status": "manual_review",
+                    "error_message": (
+                        f"ats-resolver: no form URL after {hours}h — skipped so the queue keeps moving; "
+                        "confirm by hand from the Telegram card if you want it"
+                    ),
+                },
+                id=f"eq.{r['id']}",
+            )
+    return len(rows)
+
+
 def tech_notify(text: str) -> None:
     token = os.environ.get("TELEGRAM_TECH_BOT_TOKEN")
     chat = os.environ.get("TELEGRAM_TECH_CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID")
@@ -434,6 +474,13 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--statuses", default="manual_review,pending_manual")
+    ap.add_argument(
+        "--skip-after-hours",
+        type=int,
+        default=int(os.environ.get("RESOLVER_SKIP_AFTER_HOURS", "24")),
+        help="a pending_manual row with no form URL older than this is moved out of "
+        "the queue to manual_review, so an unresolvable job never blocks the rest",
+    )
     ap.add_argument(
         "--reactivate",
         type=int,
@@ -471,6 +518,10 @@ def main() -> None:
     if promoted:
         print(f"queued for filling: {promoted}")
 
+    skipped = sweep_stale(db, args.dry_run, args.skip_after_hours)
+    if skipped:
+        print(f"skipped (no form URL, out of the queue): {skipped}")
+
     apps = pick_jobs(db, args.limit, args.statuses)
     cse_cap = int(os.environ.get("CSE_DAILY_CAP", "80"))
     print(f"candidates: {len(apps)} | cse budget left today: {quota_left('cse', cse_cap)}/{cse_cap}")
@@ -502,11 +553,19 @@ def main() -> None:
             note = f"ats-resolver: no external form; best={score:.2f}; searched: {hosts}"
             print(f"  MISS  {score:.2f}  ({hosts})")
             if not args.dry_run:
-                db.patch("applications", {"error_message": note}, id=f"eq.{app['id']}")
+                # Searched properly and found nothing — out of the queue, not left
+                # to be retried forever. The card stays live for a manual push.
+                db.patch(
+                    "applications",
+                    {"error_message": note, "status": "manual_review"},
+                    id=f"eq.{app['id']}",
+                )
 
     summary = f"🔎 ATS-resolver: {found} знайдено, {missed} без форми (з {len(apps)})"
     if promoted:
         summary = f"📥 У чергу на заповнення: {promoted}\n" + summary
+    if skipped:
+        summary += f"\n⏭ Пропущено (немає адреси форми, {args.skip_after_hours}год): {skipped}"
     if blocked:
         summary += f"; {blocked} відкладено — пошуковий канал недоступний"
     print("\n" + summary)
