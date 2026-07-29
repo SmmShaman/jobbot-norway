@@ -76,6 +76,21 @@ AURA_COLORS = {
     'Neutral': '#6b7280'
 }
 
+# Auto-søknad threshold per source (owner's rule, 2026-07-29).
+#
+# A LinkedIn job costs far more to act on than a NAV/FINN one: the posting carries
+# no application form, so someone has to find the employer's real ATS page first,
+# and only then can the form be filled. NAV and FINN hand over a working apply URL
+# with the ad. So LinkedIn has to clear a much higher bar to be worth starting,
+# while everything from NAV/FINN passes at the normal threshold.
+#
+# The number also has to be read against the 2026-07-29 rescoring: the scorer used
+# to give 85 to three quarters of everything, so 85 meant nothing. It now spreads,
+# and 85 means "every significant requirement is met".
+AUTO_SOKNAD_MIN_BY_SOURCE = {
+    'LINKEDIN': 85,
+}
+
 # Language code to full name mapping (must match job-analyzer/index.ts)
 LANG_MAP = {
     'uk': 'Ukrainian',
@@ -864,8 +879,15 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                     # the agent's fill gate (scripts/patch-agent-pollers.cjs), because
                     # that is where the cost and the irreversible step live.
                     auto_app = None
-                    if auto_soknad and result['score'] >= min_score:
-                        print(f"   ✍️ Auto-søknad for: {job['title'][:30]} (score={result['score']})")
+                    source = (job.get('source') or '').upper()
+                    auto_min = AUTO_SOKNAD_MIN_BY_SOURCE.get(source, min_score)
+                    if auto_soknad and result['score'] < auto_min and result['score'] >= min_score:
+                        print(
+                            f"   ⏭ {source or '?'} needs ≥{auto_min}: {job['title'][:30]} "
+                            f"scored {result['score']} — card only, confirm by hand if wanted"
+                        )
+                    elif auto_soknad and result['score'] >= auto_min:
+                        print(f"   ✍️ Auto-søknad for: {job['title'][:30]} (score={result['score']}, {source or '?'} ≥{auto_min})")
                         soknad_result = await generate_soknad_via_api(client, job['id'], uid)
                         if soknad_result.get('success') and soknad_result.get('application'):
                             auto_app = soknad_result['application']
