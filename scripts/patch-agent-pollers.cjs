@@ -143,6 +143,15 @@ RECON_OK=0; [ -f /workspace/agent/RECON_ALLOWED ] && RECON_OK=1
 Q1=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id,jobs!inner(external_apply_url)&status=eq.sending&submission_method=eq.agent&user_id=eq.${OWNER_USER_ID}&order=created_at.asc" "\${AUTH[@]}")
 Q2=$(curl -s "\${SUPABASE_URL}/rest/v1/application_confirmations?select=id&status=eq.confirmed&submitted_at=is.null&order=created_at.asc" "\${AUTH[@]}")
 Q3=$(curl -s "\${SUPABASE_URL}/rest/v1/application_confirmations?select=application_id&status=eq.pending" "\${AUTH[@]}")
+# Daily submission cap. The owner's rule (2026-07-29): every job above the score
+# threshold gets a letter — there can legitimately be ten in a day — but only
+# max_applications_per_day of them are actually SUBMITTED. The cap belongs here,
+# on the irreversible and expensive step, not on letter writing.
+TODAY=$(date -u +%F)
+Q4=$(curl -s "\${SUPABASE_URL}/rest/v1/user_settings?select=max_applications_per_day&user_id=eq.${OWNER_USER_ID}" "\${AUTH[@]}")
+Q5=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id&status=eq.sent&user_id=eq.${OWNER_USER_ID}&or=(sent_at.gte.\${TODAY},updated_at.gte.\${TODAY})" "\${AUTH[@]}")
+case "$Q4" in ""|"null") Q4="[]";; esac
+case "$Q5" in ""|"null") Q5="[]";; esac
 # A failed curl must not turn into a JS syntax error inside the gate.
 case "$Q1" in ""|"null") Q1="[]";; esac
 case "$Q2" in ""|"null") Q2="[]";; esac
@@ -160,16 +169,22 @@ const host = u => { try { return new URL(u).hostname.replace(/^www\\./, ''); } c
 const ready = allFill.filter(r => cached.has(host((r.jobs || {}).external_apply_url)));
 const uncached = allFill.filter(r => !ready.includes(r));
 const uncachedHosts = [...new Set(uncached.map(r => host((r.jobs || {}).external_apply_url)).filter(Boolean))];
+const cap = Number((arr($Q4)[0] || {}).max_applications_per_day) || 5;
+const sentToday = arr($Q5).length;
+const capReached = sentToday >= cap;
 // One row per wake: context must not accumulate across applications.
-const toSubmit = allSubmit.slice(0, 1);
+const toSubmit = capReached ? [] : allSubmit.slice(0, 1);
 const pool = reconOk ? allFill : ready;
-const toFill = toSubmit.length ? [] : pool.slice(0, 1);
+const toFill = (capReached || toSubmit.length) ? [] : pool.slice(0, 1);
 const wake = toFill.length > 0 || toSubmit.length > 0;
 console.log(JSON.stringify({
   wakeAgent: wake,
   data: {
     sending_to_fill: toFill,
     confirmed_to_submit: toSubmit,
+    sent_today: sentToday,
+    daily_cap: cap,
+    daily_cap_reached: capReached,
     ready_cached_total: ready.length,
     awaiting_recon_total: uncached.length,
     awaiting_recon_hosts: uncachedHosts.slice(0, 12),
@@ -203,7 +218,9 @@ const TURN_BUDGET = `⏹ РЕЖИМ РОБОТИ (${MARKER})
 
 Джерело правди — \`/workspace/extra/jobbot/skills/form-filling/SKILL.md\` (розділ «Turn budget», фази 0–9) і \`skills/form-filling/CACHE.md\`. Нижче — тільки те, що стосується цього поллера.
 
-1️⃣ ОДНА ЗАЯВКА ЗА ПРОГІН. Гейт віддає щонайбільше один рядок і окремо \`*_total\` — довжину черги. Рядки вже відфільтровані за \`user_id\` власника (Vitalii), тож чужі заявки до тебе не доходять і будити тебе через них гейт не буде. Доведи цей рядок до кінцевого статусу і заверши хід. Не питай наступний рядок, не «добери ще, поки контекст теплий»: поллер спрацює знову за 2–5 хв і візьме наступну заявку на чистому контексті. 29.07 контекст переповнився тричі за 45 хв саме через накопичення.
+1️⃣ ОДНА ЗАЯВКА ЗА ПРОГІН. Гейт віддає щонайбільше один рядок і окремо \`*_total\` — довжину черги. Рядки вже відфільтровані за \`user_id\` власника (Vitalii), тож чужі заявки до тебе не доходять і будити тебе через них гейт не буде.
+
+1️⃣b ДОБОВИЙ ЛІМІТ ПОДАЧ. Листи пишуться на всі релевантні вакансії, але ВІДПРАВЛЯЄТЬСЯ щонайбільше \`daily_cap\` за добу (налаштування \`max_applications_per_day\`). Гейт рахує це сам і показує \`sent_today\`/\`daily_cap\`; коли ліміт вибрано, він просто не будить тебе до наступної доби. Не намагайся «дотиснути ще одну» — і не став \`status='sent'\` рядкам, які насправді не відправлені: цей лічильник спирається саме на них. Доведи цей рядок до кінцевого статусу і заверши хід. Не питай наступний рядок, не «добери ще, поки контекст теплий»: поллер спрацює знову за 2–5 хв і візьме наступну заявку на чистому контексті. 29.07 контекст переповнився тричі за 45 хв саме через накопичення.
 
 2️⃣ СУБАГЕНТИ — не більше 2 одночасно і лише для справді незалежних задач з чіткою умовою зупинки. Віяло «один субагент на заявку» ЗАБОРОНЕНО: 29.07 чотири паралельні субагенти на 13 LinkedIn-заявок з'їли 16,3M (76% усіх витрат) і не відправили жодної. Кожному субагенту прямо кажи повернути короткий структурований результат (URL + вердикт + один рядок доказу), а не транскрипт, не HTML і не дампи DOM. Якщо задачу не вдається так вузько описати — роби її сам: свій контекст ти вже оплатив, субагент оплачує новий.
 

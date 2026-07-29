@@ -789,7 +789,7 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
             profile = profile_resp.data[0]['content']
 
             # Get user settings
-            settings_resp = supabase.table('user_settings').select('preferred_analysis_language, telegram_chat_id, job_analysis_prompt, auto_soknad_enabled, auto_soknad_min_score, card_notify_min_score, max_applications_per_day').eq('user_id', uid).limit(1).execute()
+            settings_resp = supabase.table('user_settings').select('preferred_analysis_language, telegram_chat_id, job_analysis_prompt, auto_soknad_enabled, auto_soknad_min_score, card_notify_min_score').eq('user_id', uid).limit(1).execute()
 
             lang = 'uk'
             chat_id = None
@@ -797,7 +797,6 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
             auto_soknad = False
             min_score = 50
             card_notify_min_score = 40
-            apps_per_day = 5
 
             if settings_resp.data:
                 settings = settings_resp.data[0]
@@ -808,20 +807,6 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                 auto_soknad = settings.get('auto_soknad_enabled', False) or False
                 min_score = settings.get('auto_soknad_min_score', 50) or 50
                 card_notify_min_score = settings.get('card_notify_min_score', 40) or 40
-                apps_per_day = settings.get('max_applications_per_day', 5) or 5
-
-            # How many applications this user already has from today — the cap counts
-            # applications, not analyses, so a re-run of the worker cannot double it.
-            today_iso = datetime.utcnow().strftime('%Y-%m-%d')
-            try:
-                apps_today = supabase.table('applications').select('id') \
-                    .eq('user_id', uid).gte('created_at', today_iso).execute()
-                apps_today_count = len(apps_today.data or [])
-            except Exception as e:
-                # Fail closed: if the count is unknown, do not open the floodgates.
-                print(f"   ⚠️ Could not count today's applications ({e}) — treating the cap as reached")
-                apps_today_count = apps_per_day
-            capped_count = 0
 
             lang_full_name = LANG_MAP.get(lang, 'Ukrainian')
             auto_label = f" | auto-søknad≥{min_score}%" if auto_soknad else ""
@@ -872,25 +857,19 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                     job['track'] = track
 
                     # Auto-søknad generation (before sending card, so it's included).
-                    # The daily cap is what stops the queue from running away: on
-                    # 2026-07-29 there were 235 open applications, 220 of them from
-                    # LinkedIn, because every job scoring >= 60 got a søknad and the
-                    # scorer handed out 85 to three quarters of everything.
-                    # max_applications_per_day sat in user_settings, unread by any code.
+                    # Every job above the threshold gets a letter — the owner's rule
+                    # (2026-07-29): "there can be ten relevant jobs in a day and all of
+                    # them should be processed". max_applications_per_day caps what is
+                    # actually SUBMITTED, not what is prepared, and it is enforced in
+                    # the agent's fill gate (scripts/patch-agent-pollers.cjs), because
+                    # that is where the cost and the irreversible step live.
                     auto_app = None
-                    if auto_soknad and result['score'] >= min_score and apps_today_count >= apps_per_day:
-                        capped_count += 1
-                        print(
-                            f"   ⏹ Daily cap {apps_per_day} reached — no søknad for "
-                            f"{job['title'][:30]} (score={result['score']})"
-                        )
-                    elif auto_soknad and result['score'] >= min_score:
+                    if auto_soknad and result['score'] >= min_score:
                         print(f"   ✍️ Auto-søknad for: {job['title'][:30]} (score={result['score']})")
                         soknad_result = await generate_soknad_via_api(client, job['id'], uid)
                         if soknad_result.get('success') and soknad_result.get('application'):
                             auto_app = soknad_result['application']
                             auto_soknad_count += 1
-                            apps_today_count += 1
                         else:
                             err = soknad_result.get('message', 'Unknown error')
                             print(f"   ⚠️ Auto-søknad failed: {err}")
@@ -923,8 +902,6 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
 
             if filtered_count > 0:
                 print(f"   🔕 Filtered (no card, score < {card_notify_min_score}): {filtered_count} jobs — see evening digest")
-            if capped_count > 0:
-                print(f"   ⏹ Daily cap held back {capped_count} søknad(s) — limit is {apps_per_day}/day")
 
             # Auto-søknad summary for this user (sent to tech bot only, never the main bot)
             if auto_soknad and auto_soknad_count > 0 and chat_id:
