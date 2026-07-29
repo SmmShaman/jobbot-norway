@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# daily_chain.sh — the whole intake, once a day, in one pass.
+#
+# Owner's decision (2026-07-29): one scan starts everything. Until now the three
+# stages were scheduled independently and did not know about each other — the
+# scanner wrote jobs and went quiet, while analysis waited on a GitHub Actions
+# cron that fired every six hours. A job found at 08:56 could sit unscored until
+# midday. Chaining them means a vacancy is scanned, scored and queued within the
+# same run, and the only thing that follows on its own schedule is the agent
+# filling forms (capped at max_applications_per_day).
+#
+# Stages are deliberately independent: a failure in one is reported and the next
+# still runs, because a broken scan should not also block scoring of yesterday's
+# leftovers.
+#
+# Env comes from the unit: worker/.env (database, telegram) plus jobbot-analyze.env
+# (GROQ_API_KEY, which worker/.env does not carry).
+
+set -u
+cd /home/stuar/Projects/Jobbot-NO || exit 1
+PY=worker/venv-vps/bin/python
+
+run() {
+  local label="$1"; shift
+  echo "=== ${label} ==="
+  if "$@"; then
+    echo "=== ${label}: ok ==="
+  else
+    echo "=== ${label}: FAILED (rc=$?) — continuing ==="
+  fi
+}
+
+# 1. Scan. The scraper reads the dashboard's own search terms and location, and
+#    refuses to run twice within 10h on its own — harmless on a daily schedule.
+run "scan" "$PY" worker/linkedin_scraper.py
+
+# 2. Score everything still marked NEW (not only today's — leftovers included).
+run "analyse" "$PY" worker/analyze_worker.py --limit 60
+
+# 3. Queue: promote applications that already have a form URL, look for the ones
+#    that do not. Free — no model involved.
+run "queue" "$PY" worker/ats_resolver.py --limit 12
+
+echo "=== daily chain done ==="
