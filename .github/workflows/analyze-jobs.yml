@@ -16,12 +16,16 @@ on:
   repository_dispatch:
     types: [analyze-jobs]
 
-  # Safety net: jobs inserted outside scheduled-scanner (linkedin_daemon.py) never
-  # fire a repository_dispatch, and scheduled-scan.yml only runs Mon-Fri — so NEW
-  # rows piled up unanalyzed over the weekend (68 of them, 24-26 Jul 2026).
-  # analyze_worker only touches rows with status != ANALYZED, so re-running is a no-op.
+  # Backstop only. Since 2026-07-29 scanning, scoring and queueing run as one
+  # chain on the VPS (worker/daily_chain.sh, systemd jobbot-daily.timer, 10:30
+  # Norwegian time) — that is what normally scores new jobs, within minutes of
+  # them being scraped rather than up to six hours later.
+  # This stays for the case where the VPS is down, and runs late in the evening so
+  # it can never overlap the 08:30 UTC chain and analyse the same rows twice.
+  # analyze_worker only touches rows with status != ANALYZED, so it is a no-op
+  # when the chain already did its job.
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 21 * * *'
 
 jobs:
   analyze:
