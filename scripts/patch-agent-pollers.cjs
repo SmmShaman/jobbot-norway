@@ -135,7 +135,10 @@ AUTH=(-H "apikey: \${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer \${SUPABAS
 # Which platforms already have a cached fill script. Recon of a NEW platform costs
 # ~6.8M tokens, so it must be a decision the owner makes, not a side effect of a
 # row reaching the queue. Drop /workspace/agent/RECON_ALLOWED to let one through.
-CACHED=$(ls -1 /workspace/agent/form-scripts 2>/dev/null | tr '\\n' ' ')
+# A directory is not a cache — only a runnable fill.mjs counts. As of 2026-07-29
+# three platforms have a profile.json and none has fill.mjs, so this correctly
+# resolves to "nothing is self-service yet".
+CACHED=$(for d in /workspace/agent/form-scripts/*/; do [ -f "$d/fill.mjs" ] && basename "$d"; done 2>/dev/null | tr '\\n' ' ')
 RECON_OK=0; [ -f /workspace/agent/RECON_ALLOWED ] && RECON_OK=1
 Q1=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id,jobs!inner(external_apply_url)&status=eq.sending&submission_method=eq.agent&user_id=eq.${OWNER_USER_ID}&order=created_at.asc" "\${AUTH[@]}")
 Q2=$(curl -s "\${SUPABASE_URL}/rest/v1/application_confirmations?select=id&status=eq.confirmed&submitted_at=is.null&order=created_at.asc" "\${AUTH[@]}")
