@@ -1,5 +1,5 @@
 
-const VERSION_STAMP = '2026-06-19-llama4-primary';
+const VERSION_STAMP = '2026-07-29-gpt-oss-rubric';
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
 
@@ -10,11 +10,17 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Groq Llama 4 — primary for job analysis (fast, cheap, great reasoning)
-const GROQ_MODEL_PRIMARY  = 'meta-llama/llama-4-maverick-17b-128e-instruct';
-const GROQ_MODEL_FALLBACK = 'meta-llama/llama-4-scout-17b-16e-instruct';
-const PRICE_PER_1M_INPUT  = 0.50;  // Llama 4 Maverick via Groq
-const PRICE_PER_1M_OUTPUT = 0.77;
+// Both Llama 4 models this function used were retired by Groq — verified against
+// the live model list on 2026-07-29, they 404. Every call through here has been
+// failing since. Same models as worker/analyze_worker.py now, so the two analysis
+// paths cannot drift apart again.
+const GROQ_MODEL_PRIMARY  = 'openai/gpt-oss-120b';
+const GROQ_MODEL_FALLBACK = 'openai/gpt-oss-20b';
+const PRICE_PER_1M_INPUT  = 0.15;
+const PRICE_PER_1M_OUTPUT = 0.75;
+// gpt-oss models reason before answering; without an explicit effort cap they
+// spend the whole completion budget on hidden reasoning and return empty content.
+const GROQ_REASONING_EFFORT = 'low';
 
 const DEFAULT_ANALYSIS_PROMPT = `
 You are a Vibe & Fit Scanner for Recruitment.
@@ -301,7 +307,8 @@ CRITICAL: Your response MUST be valid JSON with this EXACT structure:
             ],
             temperature: 0.3,
             max_tokens: 4096,
-            response_format: { type: 'json_object' }
+            response_format: { type: 'json_object' },
+            ...(model.startsWith('openai/gpt-oss') ? { reasoning_effort: GROQ_REASONING_EFFORT } : {})
           })
         });
         if (resp.status === 429) throw new Error(`Groq quota exceeded (429) on ${model}`);
