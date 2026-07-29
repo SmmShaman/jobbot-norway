@@ -280,6 +280,15 @@ def rank_candidates(urls: list[str], company: str) -> list[str]:
 # --------------------------------------------------------------------------- #
 # matching
 # --------------------------------------------------------------------------- #
+def covers_company(url: str, company: str) -> bool:
+    """Is this URL on the employer's own domain? (autostoresystem.com for AutoStore™)"""
+    comp = re.sub(r"[^a-z0-9]", "", (company or "").lower())
+    if len(comp) < 4:
+        return False
+    host = re.sub(r"[^a-z0-9]", "", urllib.parse.urlparse(url).netloc.lower())
+    return comp[:12] in host
+
+
 def words(text: str) -> set[str]:
     toks = re.findall(r"[a-zA-ZÆØÅæøåÄÖäöéèü]{4,}", (text or "").lower())
     return {t for t in toks if t not in STOPWORDS}
@@ -375,7 +384,17 @@ def resolve_one(
             break
         time.sleep(2.5)
     searched = channels != {"none"} and channels != set()
-    if best_score >= 0.45:
+    # Accepting a weak match is worse than accepting none: submitting is
+    # irreversible, and a 0.53 overlap already produced a job aggregator
+    # (getclera.com) rather than AutoStore's own ATS on 2026-07-29. So a match is
+    # only taken on strong textual overlap, or on decent overlap when the page
+    # actually sits on a known ATS or the employer's own careers domain.
+    strong = best_score >= 0.60
+    plausible = best_score >= 0.50 and best_url and (
+        any(h in best_url.lower() for h in ATS_HINTS)
+        or covers_company(best_url, company)
+    )
+    if strong or plausible:
         return best_url, best_score, tried, searched
     return None, best_score, tried, searched
 
