@@ -31,9 +31,22 @@ run() {
   fi
 }
 
-# 1. Scan. The scraper reads the dashboard's own search terms and location, and
-#    refuses to run twice within 10h on its own — harmless on a daily schedule.
-run "scan" "$PY" worker/linkedin_scraper.py
+# 1a. NAV / FINN. These live behind the scheduled-scanner edge function, not the
+#     Python scraper, and until 2026-07-29 they were driven only by an hourly
+#     GitHub workflow that fires the scan at each user's scan_time_utc (13:28 UTC
+#     for Vitalii). That is why a 10:30 chain could find LinkedIn jobs and nothing
+#     from NAV: NAV simply had not been scanned yet that day. forceRun makes the
+#     chain the trigger, so one run really does cover every source.
+run "scan nav/finn" curl -sS -m 300 -X POST \
+  "${SUPABASE_URL}/functions/v1/scheduled-scanner" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
+  -d '{"source":"daily-chain","forceRun":true}'
+echo
+
+# 1b. LinkedIn. The scraper reads the dashboard's own search terms and location,
+#     and refuses to run twice within 10h on its own — harmless once a day.
+run "scan linkedin" "$PY" worker/linkedin_scraper.py
 
 # 2. Score everything still marked NEW (not only today's — leftovers included).
 run "analyse" "$PY" worker/analyze_worker.py --limit 60
