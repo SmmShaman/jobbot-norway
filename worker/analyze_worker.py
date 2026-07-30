@@ -37,7 +37,10 @@ GROQ_FALLBACK_MODEL = 'openai/gpt-oss-20b'
 # 6000 TPM ceiling sits below a single one of our requests (6221-7350 measured), so
 # every fallback ended in 413. Gemini takes that slot: different provider, different
 # quota, and jobbot now has its own Google project rather than sharing portfolio's.
-GEMINI_MODEL = os.environ.get('GEMINI_ANALYSIS_MODEL', 'gemini-2.0-flash-lite')
+# 2026-07-30: 2.0-flash-lite has quota 0 on this project (429 on every call — the
+# 30.07 run analyzed 2/43). gemini-3.1-flash-lite is the model this free tier
+# actually grants: 500 RPD, no thinking tokens, verified live with this key.
+GEMINI_MODEL = os.environ.get('GEMINI_ANALYSIS_MODEL', 'gemini-3.1-flash-lite')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 # gpt-oss models reason before answering; without an explicit effort cap they
 # spend the whole completion budget on hidden reasoning and return empty text.
@@ -982,8 +985,11 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                     total_failed += 1
                     print(f"   ❌ {job['title'][:40]} | Error: {result['error']}")
 
-                # Rate limiting for Groq API
-                await asyncio.sleep(5.0)
+                # Rate limiting for Groq API. The gpt-oss pools allow 8000 tokens
+                # per minute and one of our requests weighs 6200-7400, so the pool
+                # fits ~one job a minute. A 5s pause meant 11 of every 12 requests
+                # hit 429 and drained the fallbacks too (30.07: 2 analyzed, 41 failed).
+                await asyncio.sleep(60.0)
 
             if filtered_count > 0:
                 print(f"   🔕 Filtered (no card, score < {card_notify_min_score}): {filtered_count} jobs — see evening digest")
