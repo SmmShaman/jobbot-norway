@@ -13,13 +13,18 @@
 | Component | Platform | Details |
 |-----------|----------|---------|
 | Frontend | Netlify (job.vitalii.no) | Auto-deploy from GitHub main, manual: `npm run build && npx netlify deploy --prod --dir=dist` |
-| Backend | Supabase (`ptrmidlhfdbybxmyovtm`) | PostgreSQL, Auth, 15 Edge Functions |
-| Primary Worker | Oracle VM (`129.151.219.55`) | `auto_apply.py` as systemd service, 24/7, auto-updates via cron |
+| Backend | **Self-hosted Supabase on Contabo VPS** — `db-jobbot.vitalii.no` (Kong :8100, db :5433) | Migrated off managed Supabase 2026-07-20. The old managed project `ptrmidlhfdbybxmyovtm` is **dead** (quota block) — do not point anything at it. Service keys live in `Projects\ENV-FILES` and on the VPS, never in this repo. |
+| Primary Worker | **Contabo VPS** (`173.249.31.179`, worker id `vps-contabo`) | `auto_apply.py`, heartbeat visible via tech-bot `/worker`. The old Oracle VM `129.151.219.55` row was historical — verify before assuming it still runs. |
 | Dev Worker | Local PC (WSL2) | Secondary worker for development/testing |
-| Skyvern | HuggingFace Space (`goldcc/skyvern`) | Browser automation Docker, may sleep after 15min inactivity |
+| Skyvern | **Contabo VPS**, `~/skyvern` docker compose (image pinned `v1.0.12`) | Reached through a Cloudflare tunnel; API key in `worker/.env`, auth header `x-api-key`. **Not** the HuggingFace Space `goldcc/skyvern` any more — that was the pre-July setup and naming it as a live component has already caused one wrong diagnosis (2026-07-30). |
 | CI/CD | GitHub Actions | Edge Function deploy, hourly scan, job analysis |
 | Monitoring | Telegram `@vitalljobtechbot` | `tech-bot` Edge Function, `/worker` command |
-| DNS/Tunnel | Cloudflare | `skyvern.vitalii.no` tunnel (inactive) |
+| DNS/Tunnel | Cloudflare | Tunnel to the VPS Skyvern; SSH to the VPS goes to the raw IP, **not** through `vitalii.no` (CF proxies it) |
+
+> **Before diagnosing anything here:** the runtime lives on the VPS, not in this checkout.
+> Read `~/.claude/memory-shared/vps_runbook_master.md`, `tokens_and_access_map.md` and the newest
+> `session_handoff_*.md`, then verify live state over SSH/API. See "Sync Before You Diagnose" in
+> `C:\Users\stuar\CLAUDE.md`.
 
 **Multi-worker locking**: Workers use atomic `claim_applications()` RPC — each instance has a unique `WORKER_ID`. Two workers can run safely without duplicating work.
 
@@ -32,7 +37,7 @@
 | Frontend | React 19, TypeScript 5.8, Vite 6, Tailwind (CDN), Lucide icons |
 | Backend | Supabase (PostgreSQL, Auth, Edge Functions) |
 | AI | Google Gemini (chat completions, job analysis, cover letters) |
-| Automation | Skyvern (HuggingFace Space Docker, browser form filling) |
+| Automation | Skyvern (Docker on Contabo VPS, browser form filling) |
 | Bot | Telegram Bot API (notifications, commands, 2FA) |
 | Map | Leaflet (job geolocation) |
 | Charts | Recharts (dashboard stats) |
