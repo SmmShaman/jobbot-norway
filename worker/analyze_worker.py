@@ -99,6 +99,16 @@ AUTO_SOKNAD_MIN_BY_SOURCE = {
     'LINKEDIN': 85,
 }
 
+# Owner's order (2026-07-31): never apply to these companies, no matter the score.
+# Jobs are still analyzed and carded — only application creation is blocked.
+# Matched case-insensitively as a substring of the company name.
+COMPANY_BLOCKLIST = {'nammo'}
+
+
+def company_blocked(company: Optional[str]) -> bool:
+    name = (company or '').lower()
+    return any(blocked in name for blocked in COMPANY_BLOCKLIST)
+
 # Language code to full name mapping (must match job-analyzer/index.ts)
 LANG_MAP = {
     'uk': 'Ukrainian',
@@ -947,7 +957,9 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                     auto_app = None
                     source = (job.get('source') or '').upper()
                     auto_min = AUTO_SOKNAD_MIN_BY_SOURCE.get(source, min_score)
-                    if auto_soknad and result['score'] < auto_min and result['score'] >= min_score:
+                    if company_blocked(job.get('company')):
+                        print(f"   🚫 Blocklisted company, no application ever: {job.get('company')} — {job['title'][:30]}")
+                    elif auto_soknad and result['score'] < auto_min and result['score'] >= min_score:
                         print(
                             f"   ⏭ {source or '?'} needs ≥{auto_min}: {job['title'][:30]} "
                             f"scored {result['score']} — card only, confirm by hand if wanted"
