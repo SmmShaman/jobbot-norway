@@ -31,6 +31,15 @@
  * `skills/form-filling/SKILL.md` — a file the agent trusts — and the poller only
  * points at it.
  *
+ * POLICY v8 (2026-08-06, current) implements the owner's rule "кнопка на кожну
+ * вакансію": auto_soknad_enabled is switched OFF for every user, so the ONLY way
+ * a row reaches status='sending' is the owner pressing «✅ Підтвердити» on the
+ * job card (the 2026-07-20 single-button flow). That press is therefore also the
+ * recon permission: the fill gate no longer holds uncached-platform rows back
+ * waiting for /workspace/agent/RECON_ALLOWED (the file keeps working as a legacy
+ * override, but nothing depends on it). Everything else from v7 — one row per
+ * wake, daily submit cap, letter-last, halt guard, per-user filter — is intact.
+ *
  * ROUTING v4 (2026-07-27, superseded) applies the owner's second rule: @soknad_bot
  * carries ONLY messages that need the user to do something. Everything
  * informational — cover-letter FYIs, submit receipts, manual-apply hand-offs —
@@ -88,7 +97,7 @@ const DB_PATH =
 const FILL_SERIES = process.env.JOBBOT_FILL_SERIES || 'task-1784787379628-6jph2g';
 const MANUAL_SERIES = process.env.JOBBOT_MANUAL_SERIES || 'task-1784787352236-wrt8oh';
 
-const MARKER = 'POLICY v7 (2026-07-29)';
+const MARKER = 'POLICY v8 (2026-08-06)';
 
 // Two users are live in production. The agent is only allowed to write letters
 // and fill forms for Vitalii — Natalia's rows must go to manual_review by hand
@@ -196,7 +205,11 @@ const sentToday = arr($Q5).length;
 const capReached = sentToday >= cap;
 // One row per wake: context must not accumulate across applications.
 const toSubmit = capReached ? [] : allSubmit.slice(0, 1);
-const pool = reconOk ? allFill : ready;
+// POLICY v8: auto_soknad_enabled is OFF for every user, so a sending row can
+// only exist because the owner pressed the card button — that press IS the
+// recon permission. The RECON_ALLOWED file stays honored as a legacy override
+// but is no longer required for unknown platforms to be workable.
+const pool = allFill;
 const toFill = (capReached || toSubmit.length) ? [] : pool.slice(0, 1);
 const wake = toFill.length > 0 || toSubmit.length > 0;
 console.log(JSON.stringify({
@@ -270,14 +283,14 @@ const FILL_BLOCK = `
 
 ${TURN_BUDGET}
 
-🗄 ТІЛЬКИ ЗНАЙОМІ ПЛАТФОРМИ. Гейт будить тебе лише тоді, коли про хост форми вже щось відомо в \`/workspace/agent/form-scripts/\`. Дивись поле \`has_fill_script\`:
+🗄 ПЛАТФОРМИ. Кожен рядок у черзі власник особисто схвалив кнопкою «✅ Підтвердити» на картці (з 2026-08-06 авто-черги не існує — \`auto_soknad_enabled=false\` у всіх), тож окремого дозволу на розвідку незнайомого хоста чекати НЕ треба: схвалення вакансії і є дозволом. Дивись поле \`has_fill_script\`:
 
 - \`true\` — є готовий \`fill.mjs\`. Запусти його з \`"submit": false\`, дай відповіді лише на те, що він поверне в \`unmapped\`/\`required_missing\`, потім \`"submit": true\`. Контракт — у \`CACHE.md\`.
 - \`false\` — скрипта немає, але Є \`profile.json\` — карта форми з recon: підписи полів, кроки візарда, пастки. Заповнюй ЗА НЕЮ, а не з нуля, і до кінця ходу збережи \`fill.mjs\`, щоб наступного разу було \`true\`.
 
 Каталог named за хостом форми, і збіг перевіряється за суфіксом: \`ostre-toten.easycruit.com\` обслуговує профіль \`easycruit.com\` — у easycruit кожен роботодавець має свій піддомен, а рушій форми спільний. Не роби recon для нового піддомену знайомої платформи.
 
-Поля \`awaiting_recon_total\` і \`awaiting_recon_hosts\` — це заявки на незнайомих платформах. Вони чекають рішення власника, бо recon однієї платформи коштує ~6,8M. **Не бери їх у роботу і не роби recon за власною ініціативою.** Виняток один: якщо \`recon_allowed: true\` (власник створив \`/workspace/agent/RECON_ALLOWED\`) — тоді розвідай ОДНУ платформу і, до завершення ходу, ОБОВʼЯЗКОВО збережи \`/workspace/agent/form-scripts/<хост>/profile.json\` і параметризований \`fill.mjs\`, перевіривши його повторним запуском. НІКОЛИ не лишай напрацьоване в \`/tmp\` — його стирає перезбірка контейнера (так згинули 58 скриптів за 22–27.07).
+Якщо для хоста в \`form-scripts/\` немає НІ скрипта, НІ \`profile.json\` — це нова платформа. Розвідай її В ЦЬОМУ Ж прогоні (recon коштує ~6,8M — тому за один прогін розбирай ОДНУ нову платформу) і, до завершення ходу, ОБОВʼЯЗКОВО збережи \`/workspace/agent/form-scripts/<хост>/profile.json\` і параметризований \`fill.mjs\`, перевіривши його повторним запуском. НІКОЛИ не лишай напрацьоване в \`/tmp\` — його стирає перезбірка контейнера (так згинули 58 скриптів за 22–27.07). Поля \`awaiting_recon_total\`/\`awaiting_recon_hosts\` — тепер лише лічильники ще не розібраних нових платформ у черзі, а \`recon_allowed\` — легасі-прапорець, на нього не зважай.
 
 ✍️ ЛИСТ ПИШЕТЬСЯ ОСТАННІМ, УСЕРЕДИНІ ЦЬОГО Ж ПРОГОНУ. Заповни ВСЕ, крім супровідного листа: контакти, CV, питання роботодавця, телефон. Аж коли решта готова і нічого вирішувати не лишилось — подивись, чого форма просить: текстове поле → напиши лист за \`skills/soknad-writing/SKILL.md\` (спершу перевір ліміт символів) і встав; файл → напиши, збережи файлом і прикріпи поруч із CV; поля для листа немає взагалі → НЕ пиши його. Готовий текст збережи в \`applications.cover_letter_no\`/\`cover_letter_uk\` у цьому ж прогоні.
 
