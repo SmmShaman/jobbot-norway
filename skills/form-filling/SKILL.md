@@ -88,6 +88,30 @@ of this skill as the Playwright mechanics.
    with `"submit": true`. No recon, no DOM dumps, no exploratory screenshots.
    Eight platforms cover 80% of the queue, so on most applications this phase is
    the entire job. Read `CACHE.md` for the I/O contract; it is short and exact.
+0b. **Account-wall probe — BEFORE any recon spending (owner's rule, 2026-08-06:
+   «перевірка акаунта — найперше, до витрати токенів»).** On a cache miss, do
+   NOT start phase 1 yet. Open the apply URL and answer one cheap question
+   first: can this form be submitted as a guest, or does it sit behind a
+   login/registration step? If a login wall exists, probe whether the profile
+   email (`stuardbmw@gmail.com`) is already registered — most ATS reveal this
+   instantly and cheaply (the registration step errors with "already
+   registered", or the password-reset form accepts the address). Three
+   outcomes:
+   - **Guest-friendly** → proceed to phase 1 as usual.
+   - **Wall + email already registered + no IMAP access to the owning
+     mailbox** (see «Password reset via IMAP» below — as of 2026-08-06 the
+     agent has IMAP for `stuardaukro@gmail.com` ONLY, and existing ATS
+     accounts belong to `stuardbmw@gmail.com`) → set `manual_review` NOW,
+     write the wall into `applications.error_message` (ALWAYS the DB column,
+     not only the tech-bot message), and end the turn. Do not recon, do not
+     write the letter: on 2026-08-06 both Storebrand (Recman) and Europris
+     (Talentech) burned a full fill run only to hit this exact wall at the
+     last step.
+   - **Wall + IMAP access to the owning mailbox exists** → run the password
+     reset / registration flow below, then continue into phase 1.
+   Cost note: skipping recon here means the platform does not get cached this
+   run — that is fine; the cache investment belongs to the first application
+   that can actually reach submit.
 1. **Recon — only when the cache misses.** Visit the form fresh, headless, and
    map its structure before writing any fill logic. Use `assets/recon.mjs`
    (`dumpFields`, `dumpButtons`, `findByExactText`) to enumerate inputs/buttons
@@ -377,6 +401,32 @@ Design (agreed 2026-07-18):
 Prerequisites already verified and ready to use once this is built:
 `AUKRO_IMAP_USER` / `AUKRO_IMAP_PASSWORD` in `worker/.env`; connectivity to
 `imap.gmail.com:993` over SSL confirmed working from throwaway test scripts.
+
+### Password reset via IMAP (extension, 2026-08-06)
+
+The account walls hit in production (Recman/Karrieresenteret, Talentech/
+hr-manager, Webcruiter) are NOT "no account" cases — they are "this email is
+already registered" cases, and the registered address is the profile email
+**`stuardbmw@gmail.com`**, not the service mailbox. The recovery flow is
+therefore a password RESET, not a fresh registration:
+
+1. Gate: this flow is allowed ONLY when `worker/.env` carries IMAP credentials
+   for the mailbox that owns the account (`BMW_IMAP_USER`/`BMW_IMAP_PASSWORD`
+   for stuardbmw accounts; `AUKRO_IMAP_*` covers only accounts the agent itself
+   registered on stuardaukro@). No credentials for the owning mailbox → the
+   wall stays a `manual_review`, phase 0b already handled it.
+2. Trigger the ATS "forgot password" form with the profile email, then read the
+   reset email over IMAP exactly like the verification flow above (UNSEEN only,
+   sender-domain + time-window scoped, wait ≤5 min).
+3. Set a generated password, persist it into `registration_flows` (never in
+   git/chat/Telegram), log in, and continue into the normal fill phases.
+4. One reset attempt per platform per turn; a failed reset (no email arrives,
+   extra identity questions, 2FA to a phone) → `manual_review` with the reason
+   in `applications.error_message`.
+
+As of 2026-08-06 `BMW_IMAP_*` is NOT set — the owner has to create a Gmail App
+Password for stuardbmw@gmail.com and place it in `worker/.env` before this
+branch can activate.
 
 ## Known gotchas (check for these on every new site)
 
