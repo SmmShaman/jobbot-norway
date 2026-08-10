@@ -95,9 +95,33 @@ AURA_COLORS = {
 # The number also has to be read against the 2026-07-29 rescoring: the scorer used
 # to give 85 to three quarters of everything, so 85 meant nothing. It now spreads,
 # and 85 means "every significant requirement is met".
-AUTO_SOKNAD_MIN_BY_SOURCE = {
-    'LINKEDIN': 85,
-}
+# Owner's decision (2026-08-10): LinkedIn postings carry no application form and
+# there is no search channel to find one, so LinkedIn NEVER auto-queues and its
+# cards carry no confirm button — the card is informational, apply via the link.
+# NAV/FINN auto-queue again at the user's auto_soknad_min_score (POLICY v9).
+AUTO_SOKNAD_EXCLUDED_SOURCES = {'LINKEDIN'}
+
+# Where the agent's platform knowledge lives on the VPS. Used only to decide
+# whether an auto-queued card needs the "allow recon" button; when the dir is
+# absent (GitHub Actions backstop) every platform counts as unknown, which just
+# shows the button — pressing it is always harmless.
+FORM_CACHE_DIR = '/home/stuar/nanoclaw-v2/groups/jobbot/form-scripts'
+
+
+def platform_cached(apply_url: Optional[str]) -> bool:
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(apply_url or '').hostname or '').removeprefix('www.')
+    except Exception:
+        return False
+    if not host or not os.path.isdir(FORM_CACHE_DIR):
+        return False
+    for d in os.listdir(FORM_CACHE_DIR):
+        if not os.path.isdir(os.path.join(FORM_CACHE_DIR, d)):
+            continue
+        if host == d or host.endswith('.' + d):
+            return True
+    return False
 
 # Owner's order (2026-07-31): never apply to these companies, no matter the score.
 # Jobs are still analyzed and carded — only application creation is blocked.
@@ -688,11 +712,23 @@ async def send_job_card(
         'parse_mode': 'HTML',
         'disable_web_page_preview': True,
     }
+    card_source = (job.get('source') or '').upper()
     if auto_app:
         msg += "\n\n🚀 <i>Вже в черзі на обробку.</i>"
         payload['text'] = msg
-    elif score >= track_min_score:
-        # Not queued yet but relevant (per this job's track threshold) → single confirm button
+        # Unknown ATS platform: the agent will NOT recon it on its own (that is
+        # the expensive step). The card carries the consent button instead.
+        apply_url = job.get('external_apply_url') or ''
+        if apply_url and not platform_cached(apply_url):
+            payload['reply_markup'] = {
+                "inline_keyboard": [[
+                    {"text": "🔓 Дозволити розвідку нової платформи",
+                     "callback_data": f"allow_recon_{auto_app['id']}"}
+                ]]
+            }
+    elif score >= track_min_score and card_source not in AUTO_SOKNAD_EXCLUDED_SOURCES:
+        # Not queued yet but relevant (per this job's track threshold) → single confirm button.
+        # LinkedIn cards get no button at all: there is no form to fill (owner 2026-08-10).
         payload['reply_markup'] = {
             "inline_keyboard": [[
                 {"text": "✅ Підтвердити", "callback_data": f"confirm_job_{job['id']}"}
@@ -956,9 +992,11 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                     # that is where the cost and the irreversible step live.
                     auto_app = None
                     source = (job.get('source') or '').upper()
-                    auto_min = AUTO_SOKNAD_MIN_BY_SOURCE.get(source, min_score)
+                    auto_min = min_score
                     if company_blocked(job.get('company')):
                         print(f"   🚫 Blocklisted company, no application ever: {job.get('company')} — {job['title'][:30]}")
+                    elif source in AUTO_SOKNAD_EXCLUDED_SOURCES:
+                        pass  # informational card only — no queue, no button
                     elif auto_soknad and result['score'] < auto_min and result['score'] >= min_score:
                         print(
                             f"   ⏭ {source or '?'} needs ≥{auto_min}: {job['title'][:30]} "

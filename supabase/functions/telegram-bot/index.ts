@@ -343,6 +343,13 @@ async function runBackgroundJob(update: any) {
 
                     const app = genResult.application;
 
+                    // POLICY v9: the button press is the owner's consent for this exact
+                    // vacancy — including recon of an unknown ATS platform. The fill gate
+                    // reads this flag; auto-queued rows don't have it.
+                    await supabase.from('applications').update({
+                        skyvern_metadata: { ...(app.skyvern_metadata || {}), owner_confirmed: true }
+                    }).eq('id', app.id);
+
                     // Queue position among this user's not-yet-sent applications (FIFO)
                     const { count: queuePos } = await supabase
                         .from('applications')
@@ -366,6 +373,37 @@ async function runBackgroundJob(update: any) {
                     console.error(`[TG] confirm_job_ exception:`, err);
                     await sendTelegram(chatId, `❌ Виняток: ${err.message || 'Unknown error'}`);
                 }
+            }
+
+            // ALLOW RECON of an unknown ATS platform for an auto-queued application (POLICY v9)
+            if (data.startsWith('allow_recon_')) {
+                if (cbMessageId) await removeButtons(chatId, cbMessageId);
+                const appId = data.split('allow_recon_')[1];
+                const userId = await getUserIdFromChat(supabase, chatId);
+
+                if (!userId) {
+                    await sendTelegram(chatId, "⚠️ Telegram не прив'язаний до акаунту. Використайте /link CODE");
+                    return;
+                }
+
+                const { data: appRow } = await supabase
+                    .from('applications')
+                    .select('skyvern_metadata')
+                    .eq('id', appId)
+                    .eq('user_id', userId)
+                    .maybeSingle();
+
+                if (!appRow) {
+                    await sendTelegram(chatId, "⚠️ Заявку не знайдено.");
+                    return;
+                }
+
+                await supabase.from('applications').update({
+                    skyvern_metadata: { ...(appRow.skyvern_metadata || {}), owner_confirmed: true }
+                }).eq('id', appId);
+
+                await sendTelegram(chatId, "🔓 <b>Дозволено.</b> Агент розвідає платформу і заповнить форму при наступному пробудженні (до 5 хв).");
+                return;
             }
 
             // SUBMIT TO FINN (Enkel Søknad)
@@ -1931,7 +1969,8 @@ async function runBackgroundJob(update: any) {
 
                     if (!existingApp) {
                         statusMsg = "\n❌ <i>Søknad не створено</i>";
-                        if (score >= 25) {
+                        // LinkedIn: no form exists to fill — the card is informational (owner 2026-08-10)
+                        if (score >= 25 && (job.source || '').toUpperCase() !== 'LINKEDIN') {
                             buttons.push({ text: "✅ Підтвердити", callback_data: `confirm_job_${job.id}` });
                         }
                     } else {
@@ -2405,7 +2444,10 @@ async function runBackgroundJob(update: any) {
 
                     if (!app) {
                         statusLine = '✍️ Потрібен Søknad';
-                        button = { text: '✅ Підтвердити', callback_data: `confirm_job_${job.id}` };
+                        // LinkedIn: no form to fill — no button (owner 2026-08-10)
+                        if ((job.source || '').toUpperCase() !== 'LINKEDIN') {
+                            button = { text: '✅ Підтвердити', callback_data: `confirm_job_${job.id}` };
+                        }
                     } else if (app.status === 'draft') {
                         statusLine = '📝 Чернетка';
                         button = { text: '✅ Підтвердити', callback_data: `approve_app_${app.id}` };
