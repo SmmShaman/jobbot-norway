@@ -1159,9 +1159,14 @@ serve(async (req: Request) => {
               hasEnkelSoknad = true;
               applicationFormType = 'finn_easy';
               console.log(`✅ Cross-platform FINN Enkel Søknad: ${externalApplyUrl}`);
-            } else if (isExternalApplyUrl(href)) {
+            } else if (isExternalApplyUrl(href) && !externalApplyUrl) {
+              // Never overwrite a URL the NAV block already resolved: the button's
+              // href is the raw finn.no/job-apply redirector, while the resolved
+              // value is the actual form (finn.no/job/apply?adId=… or the ATS).
               externalApplyUrl = href;
               console.log(`🔗 External apply URL: ${externalApplyUrl}`);
+            } else if (externalApplyUrl) {
+              console.log(`↩️ Keeping already-resolved apply URL: ${externalApplyUrl}`);
             } else {
               console.log(`⚠️ Rejected intermediate URL from button: ${href}`);
             }
