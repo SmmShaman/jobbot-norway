@@ -388,7 +388,7 @@ async function runBackgroundJob(update: any) {
 
                 const { data: appRow } = await supabase
                     .from('applications')
-                    .select('skyvern_metadata')
+                    .select('skyvern_metadata, status')
                     .eq('id', appId)
                     .eq('user_id', userId)
                     .maybeSingle();
@@ -398,11 +398,22 @@ async function runBackgroundJob(update: any) {
                     return;
                 }
 
-                await supabase.from('applications').update({
+                // The fill gate only looks at status='sending'. If the stuck-timeout
+                // watchdog already moved this row aside (failed/manual_review), the
+                // consent stamp alone would be a silent no-op (seen 2026-08-21) —
+                // revive the row so the button always means what it says.
+                const update: Record<string, unknown> = {
                     skyvern_metadata: { ...(appRow.skyvern_metadata || {}), owner_confirmed: true }
-                }).eq('id', appId);
+                };
+                if (appRow.status === 'failed' || appRow.status === 'manual_review') {
+                    update.status = 'sending';
+                    update.submission_method = 'agent';
+                    update.error_message = null;
+                }
+                await supabase.from('applications').update(update).eq('id', appId);
 
-                await sendTelegram(chatId, "🔓 <b>Дозволено.</b> Агент розвідає платформу і заповнить форму при наступному пробудженні (до 5 хв).");
+                const revived = update.status ? ' Заявку повернено в чергу.' : '';
+                await sendTelegram(chatId, `🔓 <b>Дозволено.</b>${revived} Агент розвідає платформу і заповнить форму при наступному пробудженні (до 5 хв).`);
                 return;
             }
 

@@ -772,7 +772,7 @@ async def cleanup_stuck_applications():
         cutoff = (now - timedelta(minutes=STUCK_TIMEOUT_MINUTES)).isoformat()
         agent_cutoff = now - timedelta(minutes=AGENT_STUCK_TIMEOUT_MINUTES)
         response = supabase.table("applications") \
-            .select("id, job_id, updated_at, submission_method") \
+            .select("id, job_id, updated_at, submission_method, skyvern_metadata") \
             .eq("status", "sending") \
             .lt("updated_at", cutoff) \
             .execute()
@@ -806,17 +806,39 @@ async def cleanup_stuck_applications():
         await log(f"🧹 Found {len(stuck)} stuck application(s) past their timeout")
 
         for app, timeout_minutes in stuck:
-            supabase.table("applications").update({
-                "status": "failed",
-                "worker_id": None,
-                "claimed_at": None,
-                "skyvern_metadata": {
-                    "error_message": f"Timed out: stuck in 'sending' for >{timeout_minutes} minutes.",
-                    "failed_at": datetime.now().isoformat(),
-                    "failure_reason": "stuck_timeout"
-                }
-            }).eq("id", app["id"]).execute()
-            await log(f"   ❌ App {app['id'][:8]}... → failed (stuck timeout, >{timeout_minutes}min)")
+            # Merge, never replace: the row may carry owner_confirmed or recon
+            # notes that must survive the timeout (2026-09-02 fix — the old code
+            # wiped skyvern_metadata and lost the owner's consent stamp).
+            meta = dict(app.get("skyvern_metadata") or {})
+            meta.update({
+                "error_message": f"Timed out: stuck in 'sending' for >{timeout_minutes} minutes.",
+                "failed_at": datetime.now().isoformat(),
+                "failure_reason": "stuck_timeout",
+            })
+            if app.get("submission_method") == "agent":
+                # Agent rows usually sit in 'sending' waiting for the owner to
+                # allow recon of an unknown platform. 'failed' is a dead end no
+                # poller ever revisits; 'manual_review' keeps the Telegram card
+                # alive so the consent button can still revive the row.
+                supabase.table("applications").update({
+                    "status": "manual_review",
+                    "worker_id": None,
+                    "claimed_at": None,
+                    "error_message": (
+                        f"stuck >{timeout_minutes}min in 'sending' (likely awaiting recon consent) — "
+                        "moved aside so the queue keeps moving; the card button still works"
+                    ),
+                    "skyvern_metadata": meta,
+                }).eq("id", app["id"]).execute()
+                await log(f"   ⏭ App {app['id'][:8]}... → manual_review (agent row, stuck >{timeout_minutes}min)")
+            else:
+                supabase.table("applications").update({
+                    "status": "failed",
+                    "worker_id": None,
+                    "claimed_at": None,
+                    "skyvern_metadata": meta,
+                }).eq("id", app["id"]).execute()
+                await log(f"   ❌ App {app['id'][:8]}... → failed (stuck timeout, >{timeout_minutes}min)")
 
         # Cleanup expired application confirmations and FINN auth requests
         try:
