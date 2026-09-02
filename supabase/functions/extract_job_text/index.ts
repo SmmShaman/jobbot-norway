@@ -15,11 +15,55 @@ const corsHeaders = {
 function isExternalApplyUrl(url: string): boolean {
   if (!url || !url.startsWith('http')) return false;
   const lower = url.toLowerCase();
-  // Reject aggregator/intermediate pages — these are NOT final application forms
-  if (lower.includes('finn.no') && !lower.includes('finn.no/job/apply')) return false;
+  // Reject aggregator/intermediate pages — these are NOT final application forms.
+  // finn.no/job-apply/<id>/… is the exception: it is a redirector NAV hands out,
+  // and it resolves either to FINN's own form or straight to the employer's ATS
+  // (see resolveFinnJobApply). Let it through so the caller can follow it.
+  if (
+    lower.includes('finn.no') &&
+    !lower.includes('finn.no/job/apply') &&
+    !lower.includes('finn.no/job-apply/')
+  ) return false;
   if (lower.includes('arbeidsplassen.nav.no')) return false;
   if (lower.includes('nav.no/stillinger')) return false;
   return true;
+}
+
+// Helper: follow FINN's job-apply redirector to the real destination.
+//
+// NAV publishes the apply link as `finn.no/job-apply/<adId>/apply` (or
+// `/job-apply/<adId>/job/apply`). It is not a form — it is a redirect that ends
+// either at FINN's own Enkel søknad (via a login wall carrying
+// `redirectUrl=…/job/apply?adId=…`) or directly at the employer's ATS
+// (lindbak.teamtailor.com, webcruiter, …). Both cases were previously stored as
+// nothing at all, so the row reached the queue with no form URL.
+async function resolveFinnJobApply(
+  url: string
+): Promise<{ url: string; kind: 'finn_easy' | 'external' } | null> {
+  try {
+    const resp = await fetch(url, {
+      redirect: 'follow',
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; JobBot/1.0)' },
+      signal: AbortSignal.timeout(15000),
+    });
+    let final = resp.url || url;
+
+    // FINN's login wall hides the real target in ?redirectUrl=
+    try {
+      const params = new URL(final).searchParams;
+      const redirectUrl = params.get('redirectUrl');
+      if (redirectUrl) final = decodeURIComponent(redirectUrl);
+    } catch { /* keep `final` as-is */ }
+
+    if (final.includes('finn.no/job/apply')) return { url: final, kind: 'finn_easy' };
+    if (isExternalApplyUrl(final) && !final.includes('finn.no')) {
+      return { url: final, kind: 'external' };
+    }
+    return null;
+  } catch (err) {
+    console.log(`⚠️ FINN job-apply redirect failed for ${url}: ${err}`);
+    return null;
+  }
 }
 
 // Helper: Extract domain from URL
@@ -938,14 +982,20 @@ serve(async (req: Request) => {
     let navDeadline: string | null = null;
     let navFullAddress: string | null = null;
     let navCompany: string | null = null;
+    let navApplicationEmail: string | null = null;
 
     // NEW: For NAV pages, check for embedded FINN apply URLs first
     // NAV often embeds applicationUrl in JSON or uses FINN for applications
     if (url.includes('nav.no') || url.includes('arbeidsplassen')) {
       // Method 1: Look for applicationUrl in embedded JSON
-      // NAV may use escaped quotes (\") or double-escaped (\\") in embedded JSON
-      // Match applicationUrl followed by https:// URL, stop at first unescaped quote
-      const applicationUrlMatch = html.match(/applicationUrl[\\"]?\s*:\s*[\\"]?(https?:\/\/[^"]+)/);
+      // NAV embeds the ad as a JS string, so the JSON quotes arrive escaped:
+      //   \"applicationUrl\":\"https://…\"
+      // The old pattern allowed a SINGLE optional char before and after the
+      // colon ([\\"]?), so it never matched that two-character \" sequence and
+      // every NAV ad silently lost its apply URL (measured 2026-09-02: 12 of 15
+      // sampled rows carried a URL the extractor did not see). \\* matches any
+      // depth of escaping; the capture stops at a quote or a backslash.
+      const applicationUrlMatch = html.match(/applicationUrl\\*"?\s*:\s*\\*"?(https?:\/\/[^"\\]+)/);
       if (applicationUrlMatch && applicationUrlMatch[1]) {
         let appUrl = applicationUrlMatch[1]
           .split(/\\"/)[0]            // Stop at escaped quote boundary (\\")
@@ -955,6 +1005,19 @@ serve(async (req: Request) => {
           .replace(/\\\\/g, '')       // Remove remaining double backslashes
           .replace(/\\/g, '');        // Remove remaining single backslashes
         console.log(`🔍 NAV: Found applicationUrl in JSON: ${appUrl}`);
+
+        // NAV now hands out FINN's redirector rather than a form. Follow it once:
+        // it lands either on FINN Enkel søknad or on the employer's own ATS.
+        if (appUrl.includes('finn.no/job-apply/')) {
+          const resolved = await resolveFinnJobApply(appUrl);
+          if (resolved) {
+            console.log(`↪️ NAV: finn.no/job-apply resolved to ${resolved.kind}: ${resolved.url}`);
+            appUrl = resolved.url;
+          } else {
+            console.log(`⚠️ NAV: could not resolve ${appUrl} — keeping it as-is`);
+          }
+        }
+
         if (appUrl.includes('finn.no/job/apply')) {
           externalApplyUrl = appUrl;
           hasEnkelSoknad = true;
@@ -967,6 +1030,16 @@ serve(async (req: Request) => {
         } else {
           console.log(`⚠️ NAV: Rejected intermediate URL: ${appUrl}`);
         }
+      }
+
+      // Method 1b: some NAV ads carry no URL at all — the employer wants the
+      // application by e-mail (`applicationEmail`). Capture it so the address is
+      // at least visible on the card instead of the row dying as "no form URL".
+      // Sending that mail is a separate decision and is NOT automated here.
+      const applicationEmailMatch = html.match(/applicationEmail\\*"?\s*:\s*\\*"?([^"\\@\s]+@[^"\\\s]+)/);
+      if (applicationEmailMatch && applicationEmailMatch[1]) {
+        navApplicationEmail = applicationEmailMatch[1];
+        console.log(`📧 NAV: application by e-mail: ${navApplicationEmail}`);
       }
 
       // Method 2: Look for FINN apply URL in href attributes
@@ -1555,6 +1628,12 @@ serve(async (req: Request) => {
         // it will be constructed later by finn-apply or auto_apply.py
         // But we should still mark it as finn_easy
         console.log(`⚠️ FINN Easy Apply detected but no URL constructed (will be built from job_url later)`);
+      }
+
+      // An ad that only accepts e-mail applications has no form URL by design.
+      // Record the address so the card can show a real next step.
+      if (navApplicationEmail) {
+        updateData.contact_email = navApplicationEmail;
       }
 
       if (deadline) {
