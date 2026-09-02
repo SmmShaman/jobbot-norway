@@ -31,7 +31,21 @@
  * `skills/form-filling/SKILL.md` — a file the agent trusts — and the poller only
  * points at it.
  *
- * POLICY v9 (2026-08-10, current) re-enables NAV/FINN auto-queue at the user's
+ * POLICY v10 (2026-09-02, current) adds BOUNDED AUTO-RECON on top of v9. The
+ * measured cost of v9's consent-only recon: 19.08–31.08 every queued job landed
+ * on an uncached ATS, nobody pressed the card button within the 120-min window,
+ * and the pipeline sent exactly zero applications for two weeks. Owner's call
+ * (2026-09-02): the fill gate may now grant recon of up to RECON_AUTO_CAP
+ * (default 2) NEW platforms per UTC day by stamping
+ * skyvern_metadata.auto_recon_granted on the row itself (so the budget is spent
+ * once per row, survives the stuck-timeout watchdog, and repeat gate ticks are
+ * free). Rows beyond the daily budget still wait for the card button, which
+ * since 9e34fc8 also revives timed-out rows. When several uncached hosts queue
+ * up, the gate spends the budget on the host with the most queued rows first —
+ * recon knowledge generalises per host, so that is the best token-per-vacancy
+ * buy.
+ *
+ * POLICY v9 (2026-08-10, superseded) re-enables NAV/FINN auto-queue at the user's
  * auto_soknad_min_score (owner's decision after 4 days of v8 produced zero
  * submissions — nobody pressed buttons). LinkedIn is excluded from auto AND
  * loses its card button entirely: no form exists and no search channel is
@@ -104,7 +118,7 @@ const DB_PATH =
 const FILL_SERIES = process.env.JOBBOT_FILL_SERIES || 'task-1784787379628-6jph2g';
 const MANUAL_SERIES = process.env.JOBBOT_MANUAL_SERIES || 'task-1784787352236-wrt8oh';
 
-const MARKER = 'POLICY v9 (2026-08-10)';
+const MARKER = 'POLICY v10 (2026-09-02)';
 
 // Two users are live in production. The agent is only allowed to write letters
 // and fill forms for Vitalii — Natalia's rows must go to manual_review by hand
@@ -148,9 +162,10 @@ const FILL_SCRIPT = `${HALT_GUARD}
 # The agent fills and submits in one run, so a row in 'sending' is always real
 # work. Legacy pending confirmations are counted, never subtracted.
 AUTH=(-H "apikey: \${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer \${SUPABASE_SERVICE_KEY}")
-# Which platforms already have a cached fill script. Recon of a NEW platform costs
-# ~6.8M tokens, so it must be a decision the owner makes, not a side effect of a
-# row reaching the queue. Drop /workspace/agent/RECON_ALLOWED to let one through.
+# Which platforms already have a cached fill script. Recon of a NEW platform
+# costs ~6.8M tokens, so it is rationed: the card button consents per row, the
+# gate itself grants up to RECON_AUTO_CAP/day (below), and the legacy
+# /workspace/agent/RECON_ALLOWED file still lets one through unconditionally.
 # What the agent already knows about a platform. Two levels, both usable:
 #   fill.mjs     — a runnable script, the cheap case
 #   profile.json — a recon map (field labels, wizard steps, gotchas). Filling from
@@ -168,6 +183,15 @@ CACHED=$(for d in /workspace/agent/form-scripts/*/; do
 done 2>/dev/null | tr '\\n' ' ')
 SCRIPTED=$(for d in /workspace/agent/form-scripts/*/; do [ -f "$d/fill.mjs" ] && basename "$d"; done 2>/dev/null | tr '\\n' ' ')
 RECON_OK=0; [ -f /workspace/agent/RECON_ALLOWED ] && RECON_OK=1
+# ${MARKER}: bounded auto-recon. Up to RECON_AUTO_CAP new platforms per UTC day
+# get recon consent from the gate itself (stamped onto the row as
+# skyvern_metadata.auto_recon_granted, so the budget is spent once per row and
+# repeat ticks are free). Beyond the budget the card button still works.
+AUTO_CAP=\${RECON_AUTO_CAP:-2}
+AUTO_FILE="/workspace/agent/.recon-auto-used-$(date -u +%F)"
+AUTO_USED=$(cat "$AUTO_FILE" 2>/dev/null)
+case "$AUTO_USED" in ''|*[!0-9]*) AUTO_USED=0;; esac
+find /workspace/agent -maxdepth 1 -name '.recon-auto-used-*' -mtime +7 -delete 2>/dev/null
 Q1=$(curl -s "\${SUPABASE_URL}/rest/v1/applications?select=id,skyvern_metadata,jobs!inner(external_apply_url)&status=eq.sending&submission_method=eq.agent&user_id=eq.${OWNER_USER_ID}&order=created_at.asc" "\${AUTH[@]}")
 Q2=$(curl -s "\${SUPABASE_URL}/rest/v1/application_confirmations?select=id&status=eq.confirmed&submitted_at=is.null&order=created_at.asc" "\${AUTH[@]}")
 Q3=$(curl -s "\${SUPABASE_URL}/rest/v1/application_confirmations?select=application_id&status=eq.pending" "\${AUTH[@]}")
@@ -205,21 +229,52 @@ const covers = (list, h) => !!h && list.some(d => {
 // a script, or at least a recon map. Anything else would mean recon from zero,
 // which is the single most expensive thing the agent does.
 const ready = allFill.filter(r => covers(dirs, host((r.jobs || {}).external_apply_url)));
-// POLICY v9 (2026-08-10): NAV/FINN auto-queue again, so a sending row no longer
-// proves the owner saw it. Recon of an unknown platform therefore needs explicit
-// consent: the card button (confirm_job_/allow_recon_) stamps
-// skyvern_metadata.owner_confirmed on the row. Cached platforms need no consent;
-// RECON_ALLOWED stays as the legacy blanket override.
-const consented = r => ((r.skyvern_metadata || {}).owner_confirmed) === true;
+// ${MARKER}: NAV/FINN auto-queue (since v9), so a sending row does not prove
+// the owner saw it. Recon consent for an uncached platform comes from either
+// the card button (confirm_job_/allow_recon_ stamps owner_confirmed) or the
+// gate's own daily auto-recon budget (stamps auto_recon_granted, below).
+// Cached platforms need no consent; RECON_ALLOWED stays as the legacy override.
+const consented = r => { const m = r.skyvern_metadata || {}; return m.owner_confirmed === true || m.auto_recon_granted === true; };
 const workable = allFill.filter(r => ready.includes(r) || consented(r) || reconOk);
 const uncached = allFill.filter(r => !workable.includes(r));
-const uncachedHosts = [...new Set(uncached.map(r => host((r.jobs || {}).external_apply_url)).filter(Boolean))];
 const cap = Number((arr($Q4)[0] || {}).max_applications_per_day) || 5;
 const sentToday = arr($Q5).length;
 const capReached = sentToday >= cap;
+// Bounded auto-recon: only when nothing cached/consented is waiting, spend one
+// unit of today's budget on ONE uncached row — preferring the host with the
+// most queued rows, because recon knowledge generalises across the whole host.
+// The grant is stamped onto the row BEFORE waking, so a crash, a stuck-timeout
+// or the next tick never re-spends the budget on the same row.
+const autoCap = Number('$AUTO_CAP') || 0;
+let autoUsed = Number('$AUTO_USED') || 0;
+let autoPick = [];
+if (!capReached && !allSubmit.length && !workable.length && uncached.length && autoUsed < autoCap) {
+  const byHost = {};
+  uncached.forEach(r => { const h = host((r.jobs || {}).external_apply_url); if (h) byHost[h] = (byHost[h] || 0) + 1; });
+  const cand = uncached.slice().sort((a, b) =>
+    (byHost[host((b.jobs || {}).external_apply_url)] || 0) - (byHost[host((a.jobs || {}).external_apply_url)] || 0)
+  )[0];
+  const meta = Object.assign({}, cand.skyvern_metadata || {}, {
+    auto_recon_granted: true,
+    auto_recon_granted_at: new Date().toISOString()
+  });
+  try {
+    require('child_process').execFileSync('curl', ['-s', '-f', '-X', 'PATCH',
+      '\${SUPABASE_URL}/rest/v1/applications?id=eq.' + cand.id,
+      '-H', 'apikey: \${SUPABASE_SERVICE_KEY}',
+      '-H', 'Authorization: Bearer \${SUPABASE_SERVICE_KEY}',
+      '-H', 'Content-Type: application/json',
+      '-d', JSON.stringify({ skyvern_metadata: meta })]);
+    require('fs').writeFileSync('$AUTO_FILE', String(autoUsed + 1));
+    autoUsed += 1;
+    cand.skyvern_metadata = meta;
+    autoPick = [cand];
+  } catch (e) { /* PATCH failed: no stamp, no budget spent, retry next tick */ }
+}
+const stillUncached = uncached.filter(r => !autoPick.includes(r));
 // One row per wake: context must not accumulate across applications.
 const toSubmit = capReached ? [] : allSubmit.slice(0, 1);
-const pool = workable;
+const pool = workable.concat(autoPick);
 const toFill = (capReached || toSubmit.length) ? [] : pool.slice(0, 1);
 const wake = toFill.length > 0 || toSubmit.length > 0;
 console.log(JSON.stringify({
@@ -234,9 +289,12 @@ console.log(JSON.stringify({
     daily_cap: cap,
     daily_cap_reached: capReached,
     ready_cached_total: ready.length,
-    awaiting_recon_total: uncached.length,
-    awaiting_recon_hosts: uncachedHosts.slice(0, 12),
+    awaiting_recon_total: stillUncached.length,
+    awaiting_recon_hosts: [...new Set(stillUncached.map(r => host((r.jobs || {}).external_apply_url)).filter(Boolean))].slice(0, 12),
     recon_allowed: reconOk,
+    auto_recon_cap: autoCap,
+    auto_recon_used_today: autoUsed,
+    auto_recon_granted_now: autoPick.length > 0,
     confirmed_to_submit_total: allSubmit.length,
     legacy_awaiting_button: legacy.size
   }
@@ -293,7 +351,7 @@ const FILL_BLOCK = `
 
 ${TURN_BUDGET}
 
-🗄 ПЛАТФОРМИ. Кожен рядок у черзі власник особисто схвалив кнопкою «✅ Підтвердити» на картці (з 2026-08-06 авто-черги не існує — \`auto_soknad_enabled=false\` у всіх), тож окремого дозволу на розвідку незнайомого хоста чекати НЕ треба: схвалення вакансії і є дозволом. Дивись поле \`has_fill_script\`:
+🗄 ПЛАТФОРМИ. NAV/FINN-заявки потрапляють у чергу автоматично (з POLICY v9, поріг \`auto_soknad_min_score\`). Рядок НЕЗНАЙОМОЇ платформи гейт віддає тобі лише тоді, коли дозвіл на розвідку вже є: штамп \`owner_confirmed\` (власник натиснув кнопку на картці) або \`auto_recon_granted\` (гейт сам видає до \`auto_recon_cap\` таких дозволів на добу — ${MARKER} — і ставить штамп у \`skyvern_metadata\` ще ДО твого пробудження). Тож окремо питати дозволу НЕ треба: якщо рядок прийшов — його вже дозволено, розвідуй і заповнюй. Дивись поле \`has_fill_script\`:
 
 - \`true\` — є готовий \`fill.mjs\`. Запусти його з \`"submit": false\`, дай відповіді лише на те, що він поверне в \`unmapped\`/\`required_missing\`, потім \`"submit": true\`. Контракт — у \`CACHE.md\`.
 - \`false\` — скрипта немає, але Є \`profile.json\` — карта форми з recon: підписи полів, кроки візарда, пастки. Заповнюй ЗА НЕЮ, а не з нуля, і до кінця ходу збережи \`fill.mjs\`, щоб наступного разу було \`true\`.
