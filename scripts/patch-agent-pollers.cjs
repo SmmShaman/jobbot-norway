@@ -136,7 +136,9 @@ const BLOCK_SENTINELS = [
   '\n\n📮 КУДИ СЛАТИ ПІДТВЕРДЖЕННЯ', // patch3-pollers.cjs, 2026-07-26
   '\n\n⏹ ЗАВЕРШУЙ ХІД ОДРАЗУ', // GATE v2
   '\n\n⏹ АВТОСАБМІТ', // GATE v3 / ROUTING v4 / CACHE v5
-  '\n\n⏹ РЕЖИМ РОБОТИ', // POLICY v6
+  '\n\n⏹ РЕЖИМ РОБОТИ', // POLICY v6+ (fill poller block starts here)
+  '\n\n⏹ ЦЕЙ ПОЛЛЕР БІЛЬШЕ НЕ ПИШЕ ЛИСТІВ', // POLICY v9+ manual block — without
+  // this sentinel a re-run stacked a duplicate block (found on the v10 dry-run)
 ];
 
 // Both gates start with this. A halt costs zero tokens: no wake, no queries, and
