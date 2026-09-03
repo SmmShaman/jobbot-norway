@@ -1,25 +1,278 @@
 {
   "domain": "candidate.webcruiter.com",
   "shareOfQueue": "23.1%",
-  "reconnedAt": "2026-07-27",
-  "strategy": "manual_review",
+  "reconnedAt": "2026-09-03",
+  "strategy": "account",
   "requiresAccount": true,
   "hasGuestApply": false,
-  "notes": "Recon 2026-07-27: the apply URL https://candidate.webcruiter.com/cv?advertid=<id> redirects to https://candidate.webcruiter.com/nb-no/Account/spalogin?ReturnUrl=… — the application form sits behind a candidate account and there is no guest path. Nothing on the landing page is fillable; the only inputs are the Cybot Cookiebot consent checkboxes. Account registration is NOT implemented (SKILL.md § Registration flow via IMAP is design-only, zero code written). DO NOT run recon or Playwright against this host — it burns a full recon budget and always ends at the same login wall. Route straight to manual_review.",
-  "agentAction": [
-    "Detect host candidate.webcruiter.com on the apply URL.",
-    "Do not launch a browser.",
-    "Make sure the cover letter (NO + UK) is written and stored on the application.",
-    "Set applications.status = 'manual_review'.",
-    "Send the tech bot a '🖐 ВРУЧНУ' notice with the direct advert link and the ready letter so the user can apply by hand."
-  ],
+  "notes": "Webcruiter (Talentech) candidate portal — one host-wide account serves every employer on the ATS. The apply URL https://candidate.webcruiter.com/cv?advertid=<id> 302s to /nb-no/Account/spalogin?ReturnUrl=%2Fcv%3Fadvertid%3D<id>; there is no guest path. Since 2026-09-03 the account is handled by fill.mjs via ensureAccount() (stored password in site_credentials, key = bare host). After login the application is a SEQUENTIAL accordion (Knockout + Kendo) at /nb-no/cv?advertid=<id>#personalapply: a draft application (own Webcruiter-ID, listed under 'Påbegynte' on /nb-no/Home) is created server-side as soon as the page opens — that is a draft, not a submission. Each section must be saved with its own 'Lagre' before the next one unlocks (later headings carry aria-disabled=true). Personalia opens in edit mode on EVERY load, prefilled from the profile, but 'Gyldig arbeidstillatelse for Norge' is never prefilled and is required (PUT /api/personaldetail/<id> → 422 'WorkingPermit må fylles ut'). Every screening question is required (PUT save_question → 422 'Spørsmålet \"…\" mangler et svar'). 'Send søknad' is disabled until Personalia + Spørsmål + Søknadstekst are saved. Two-factor login (one-time code by e-mail, #Login_Code) is OFF on the account — do not enable it. No CAPTCHA anywhere. Superseded: the 2026-07-27 manual_review verdict.",
   "cookieBanner": {
     "vendor": "Cybot Cookiebot",
-    "acceptButtons": ["Tillat alle", "Godta alle", "Aksepter alle"]
+    "selector": "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll"
   },
   "urlShape": {
     "pattern": "https://candidate.webcruiter.com/cv?advertid=<advertid>&language=nb",
-    "note": "advertid is the stable per-posting id; link_source_id / utm_* are tracking noise and can be dropped."
+    "loginUrl": "https://candidate.webcruiter.com/nb-no/Account/spalogin?ReturnUrl=%2Fcv%3Fadvertid%3D<advertid>",
+    "applicationUrl": "https://candidate.webcruiter.com/nb-no/cv?advertid=<advertid>#personalapply",
+    "note": "advertid is the stable per-posting id; link_source_id / utm_* are tracking noise and can be dropped. The advert itself lives on a tenant host (<tenantId>.webcruiter.no/Main2/Recruit/Public/<advertid>) whose 'Søk på stillingen' button links to the candidate URL."
   },
-  "revisitWhen": "The IMAP registration flow from SKILL.md is actually built. At that point this profile becomes: register → verify email via IMAP → log in → fill, and a real fill.mjs can be written. Until then the negative result is the whole value of this file — it is worth ~6.8M tokens per avoided recon attempt."
+  "accountFlow": {
+    "credentialKey": "candidate.webcruiter.com",
+    "username": "applicant e-mail",
+    "mailFrom": "webcruiter",
+    "detect": "goto loginUrl; if the URL no longer contains spalogin → 'guest' (session valid). Fill #Start_Email, click #start-next-button, read POST /api/account/validateemail: 200 → 'wall' (profile exists), 404 → 'login' (no profile → register). CAPTCHA iframe → 'captcha' (never seen).",
+    "login": "on the login view fill #Login_Password_show, click #login-next-button; success = URL leaves /Account/spalogin (lands on the ReturnUrl). Rejection text in #login-form .validation-summary-errors. If #Login_Code appears (2FA on) the script reads the mailed code over IMAP and submits #verifycode-next-button — untested, 2FA is off.",
+    "requestReset": "on the login view click a[href=\"#forgot-view\"], fill #RecoveryByEmail_Email, click #forgot-next-button ('Send nytt passord').",
+    "resetMail": "carries a LINK https://candidate.webcruiter.com/Account/ResetPassword?code=… (resetMailFilter.extract = extractLink(text, host)).",
+    "completeReset": "open the link, fill #Password_show, click a#reset-button ('Lagre nytt passord') → lands logged-in on /nb-no/Home. Verified 2026-09-03.",
+    "register": "after validateemail 404 the register view shows: #Register_FullName, #Register_MobilePhone_CountryCode, #Register_MobilePhone, #Register_Password_show, terms checkbox form#register-form input[type=checkbox], #register-next-button. Expected next: one-time code view (#Login_Code + #verifycode-next-button) → 'verify-code'. Untested end-to-end (the applicant already had a profile).",
+    "hooksTested": {
+      "detect": true,
+      "login": true,
+      "requestReset": "2026-09-03 recon (link received)",
+      "completeReset": "2026-09-03 recon",
+      "register": false,
+      "completeRegistration": false,
+      "twoFactorCode": false
+    }
+  },
+  "entryFlow": [
+    {
+      "step": "dismiss cookie banner",
+      "selector": "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll"
+    },
+    {
+      "step": "ensureAccount (login with stored password)",
+      "selector": "#Start_Email → #start-next-button → #Login_Password_show → #login-next-button"
+    },
+    {
+      "step": "open application",
+      "selector": "https://candidate.webcruiter.com/nb-no/cv?advertid=<id>#personalapply"
+    },
+    {
+      "step": "wait for accordion",
+      "selector": "h2.element-header"
+    }
+  ],
+  "sectionMechanics": {
+    "heading": "h2.element-header:has-text('<name>') → ancestor div.panel-heading (Knockout click binding); the panel is ancestor div.we-panel, expanded state = class we-panel-expanded; locked = panel-heading[aria-disabled=true]",
+    "summaryMode": "a saved section shows a preview with an 'Endre' button — click button:visible:has-text('Endre') inside the panel to re-enter edit mode (a hidden .btn-block mobile twin exists, always filter :visible)",
+    "editLock": "while ANY section is in edit mode the other sections do not open (rightPanelDisabled) — save the current one first"
+  },
+  "steps": [
+    {
+      "name": "Personalia",
+      "fields": [
+        {
+          "label": "E-post",
+          "selector": "#Email",
+          "type": "text",
+          "gotcha": "read-only, the account username"
+        },
+        {
+          "label": "Fornavn og etternavn*",
+          "selector": "#Name",
+          "type": "text",
+          "gotcha": "single full-name field, maxlength 99; prefilled from the profile"
+        },
+        {
+          "label": "Landskode",
+          "selector": "#MobilePhone_CountryCode",
+          "type": "text",
+          "gotcha": "digits only, no '+', maxlength 4 (47)"
+        },
+        {
+          "label": "Mobilnummer*",
+          "selector": "#MobilePhone",
+          "type": "text",
+          "gotcha": "8 digits, no country code"
+        },
+        {
+          "label": "Fødselsdato*",
+          "selector": "#BirthDate",
+          "type": "date",
+          "gotcha": "native <input type=date>, fill with yyyy-mm-dd"
+        },
+        {
+          "label": "Adresse*",
+          "selector": "#Address",
+          "type": "text"
+        },
+        {
+          "label": "Postnummer*",
+          "selector": "#ZipCode",
+          "type": "text"
+        },
+        {
+          "label": "Poststed*",
+          "selector": "#City",
+          "type": "text",
+          "gotcha": "profile currently holds 'Ukrainsk' here (should be Lena) — the script keeps prefilled values; fix it once in the profile UI"
+        },
+        {
+          "label": "Land*",
+          "selector": "#CountryTwoLetterIsoCode",
+          "type": "select",
+          "gotcha": "ISO-2 values, NO"
+        },
+        {
+          "label": "Juridisk kjønn*",
+          "selector": "label[for=\"genderMale\"] / label[for=\"genderFemale\"]",
+          "type": "radio",
+          "gotcha": "styled button group; click the <label>, not the hidden input"
+        },
+        {
+          "label": "Gyldig arbeidstillatelse for Norge*",
+          "selector": "label:has(input[name=\"WorkingPermit\"][value=\"true\"])",
+          "type": "radio",
+          "gotcha": "REQUIRED and NEVER prefilled — 422 'WorkingPermit må fylles ut' without it; click the <label>"
+        },
+        {
+          "label": "Nasjonalitet*",
+          "selector": "#NationalityId",
+          "type": "select",
+          "gotcha": "numeric option values; select by visible label"
+        },
+        {
+          "label": "Profilbilde*",
+          "selector": "(profile picture)",
+          "type": "file",
+          "gotcha": "required marker but satisfied by the profile picture already on the account; not handled by the script"
+        }
+      ],
+      "advanceButton": {
+        "selector": "#save-personal-detail",
+        "name": "Lagre",
+        "xhr": "PUT /api/personaldetail/<profileId> (422 + ModelState on validation errors)"
+      }
+    },
+    {
+      "name": "Spørsmål",
+      "fields": [
+        {
+          "label": "dynamic per-advert screening questions",
+          "selector": "div.we-panel:has(h2.element-header:has-text('Spørsmål')) .mb-xl:visible — question text in span.h5; options as label.k-radio-label:visible (input.k-radio, name = questionId, id = answerId); free text as textarea.free-text:visible (id = questionId)",
+          "type": "radio | textarea",
+          "gotcha": "EVERY question is required (422 'mangler et svar'). Match answers by label substring; for radios the answer must equal one option text (case-insensitive, e.g. 'JA'/'Nei'). Hidden radios exist behind free-text questions — always filter :visible. Test advert had 8 questions: 3 Ja/Nei + 5 free text (HPR number, motivation, relevant experience, personal qualities, worked in Sykehjemsetaten)."
+        }
+      ],
+      "advanceButton": {
+        "selector": "button.btn-save:has-text('Lagre') inside the panel",
+        "name": "Lagre",
+        "xhr": "PUT /api/jobapplication/save_question/<applicationId>"
+      }
+    },
+    {
+      "name": "Søknadstekst",
+      "fields": [
+        {
+          "label": "Søknadstekst*",
+          "selector": "#ApplicationText",
+          "type": "text",
+          "charLimit": null,
+          "gotcha": "a real <textarea> (verified tagName), placeholder 'Skriv søknaden din her', no maxlength attribute and no visible counter — the UI only advises 'mellom tre avsnitt og én A4-side'. Section is locked (aria-disabled) until Spørsmål is saved. 'Se tidligere søknader' offers to copy an old letter — ignore it."
+        }
+      ],
+      "advanceButton": {
+        "selector": "button.btn-save:has-text('Lagre') inside the panel",
+        "name": "Lagre",
+        "xhr": "PUT /api/jobapplication/savecoverletter/<applicationId>"
+      }
+    },
+    {
+      "name": "Hensyn",
+      "fields": [
+        {
+          "label": "Innvandrerbakgrunn / Nedsatt funksjonsevne / Fortrinnsrett / Unntatt offentlighet",
+          "selector": "(Endre button → checkboxes)",
+          "type": "checkbox",
+          "gotcha": "optional diversity flags; the script never touches them"
+        }
+      ],
+      "advanceButton": null
+    },
+    {
+      "name": "CV",
+      "fields": [
+        {
+          "label": "Arbeidserfaring* / Utdanning* / Språkkunnskaper",
+          "selector": "(structured master CV, 'Legg til på CV' dropdown)",
+          "type": "structured",
+          "gotcha": "the profile's structured CV satisfies 'CV *' — nothing to upload on the test advert. The script only verifies that Arbeidserfaring entries exist."
+        },
+        {
+          "label": "Legg til CV (CV som vedlegg til søknaden)",
+          "selector": ".k-upload-button:visible input#attachCVfile",
+          "type": "file",
+          "gotcha": "Kendo upload widget shown only when the advert asks for a CV attachment (model.ShowUploadCV); accept .doc .docx .pdf .txt .rtf .odt .html, max 5 MB. When visible the script uploads cvPath there. Attached file list: #attachment-list-view-jobapplication."
+        },
+        {
+          "label": "Opprett CV automatisk",
+          "selector": "button:has-text('Opprett CV automatisk') / #attachCVFileForMaster",
+          "type": "file",
+          "gotcha": "DO NOT USE — parses an uploaded file into the master CV and rewrites the profile"
+        }
+      ],
+      "advanceButton": null
+    },
+    {
+      "name": "Referanser",
+      "fields": [
+        {
+          "label": "Ny referanse",
+          "selector": "button:has-text('Ny referanse')",
+          "type": "button",
+          "gotcha": "optional; not handled"
+        }
+      ],
+      "advanceButton": null
+    },
+    {
+      "name": "Vedlegg",
+      "fields": [
+        {
+          "label": "Legg til vedlegg",
+          "selector": "#addAttachmentBtn → input#upload-attachments",
+          "type": "file",
+          "gotcha": "optional (required marker bound to RequireAttachment, hidden on the test advert); 'Hent ditt vitnemål fra Vitnemålsportalen' = ID-porten flow, never automate"
+        }
+      ],
+      "advanceButton": null
+    },
+    {
+      "name": "Send",
+      "fields": [
+        {
+          "label": "Forhåndsvisning av søknaden",
+          "selector": "button:has-text('Forhåndsvisning av søknaden')",
+          "type": "button",
+          "gotcha": "safe preview modal"
+        },
+        {
+          "label": "Slette søknaden",
+          "selector": "button:has-text('Slette søknaden')",
+          "type": "button",
+          "gotcha": "deletes the draft — never click"
+        }
+      ],
+      "submitButton": {
+        "selector": "button.ga-sent-app-link-button",
+        "name": "Send søknad",
+        "gotcha": "disabled (data-bind disabled:bottomShouldGray) until Personalia+Spørsmål+Søknadstekst are saved; after it becomes enabled nothing else stops a click — fill.mjs clicks it only with submit:true, empty required_missing/unmapped and FILL_DRY_RUN!=='1'. Post-submit view shows 'Takk for søknaden' (template text); a confirmation modal may exist — the submit branch is UNTESTED as of 2026-09-03 (the test advert is a real nursing job that must not be applied to)."
+      }
+    }
+  ],
+  "fillScript": {
+    "path": "form-scripts/candidate.webcruiter.com/fill.mjs",
+    "inputExtras": "applicant.gender ('male'|'female'), applicant.workPermit (bool, default true), applicant.birthDate (yyyy-mm-dd), applicant.nationality (option label) — used only when the profile left the field empty",
+    "outputExtras": "prefilled[] (values kept from the profile/draft), submitReady (bool: 'Send søknad' enabled), account{}",
+    "envGuard": "FILL_DRY_RUN=1 forces submit off regardless of input",
+    "testedRuns": [
+      "2026-09-03 run1 answers={} → ok, account.mode=login, unmapped = the 3 Ja/Nei questions (free-text ones were kept from the draft), required_missing lists them + 'Søknadstekst locked'",
+      "2026-09-03 run2 with 8 answers → ok, filled 9, unmapped [], required_missing [], submitReady true, submitted false; /nb-no/Home still shows 1 påbegynt, 9 sendte (last 16.05.2026) — nothing submitted"
+    ]
+  },
+  "knownState": "A draft (Webcruiter-ID 4993025282) for advert 5171470499 with TEST answers exists on the account since 2026-09-03; it is harmless unless someone presses Send søknad. Delete it by hand via 'Slette søknaden' if the advert ever becomes a real application.",
+  "revisitWhen": "First real submit — verify the post-click confirmation (modal? 'Takk for søknaden'?) and record it here; first advert that shows the 'Legg til CV' upload widget or RequireAttachment; register flow when a second applicant without a Webcruiter profile appears.",
+  "credentialNote": "A password for stuardbmw@gmail.com is stored in site_credentials (site_domain candidate.webcruiter.com, reset 2026-09-03), so login needs no IMAP. requiresMailbox is deliberately NOT set: the gate would otherwise park this host until BMW_IMAP_* exists, while login already works. Reset/register fall back to `blocked` without IMAP for stuardbmw@."
 }
