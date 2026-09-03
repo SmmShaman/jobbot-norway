@@ -118,7 +118,7 @@ const DB_PATH =
 const FILL_SERIES = process.env.JOBBOT_FILL_SERIES || 'task-1784787379628-6jph2g';
 const MANUAL_SERIES = process.env.JOBBOT_MANUAL_SERIES || 'task-1784787352236-wrt8oh';
 
-const MARKER = 'POLICY v10 (2026-09-02)';
+const MARKER = 'POLICY v11 (2026-09-03)';
 
 // Two users are live in production. The agent is only allowed to write letters
 // and fill forms for Vitalii — Natalia's rows must go to manual_review by hand
@@ -173,13 +173,22 @@ AUTH=(-H "apikey: \${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer \${SUPABAS
 #   profile.json — a recon map (field labels, wizard steps, gotchas). Filling from
 #                  a map costs far less than recon from zero, and the easycruit
 #                  profile explicitly generalises across every subdomain.
-# A profile routed to manual_review (webcruiter: account wall, no guest apply) is
-# NOT workable — waking for it would only produce a status change.
+# A profile routed to manual_review is NOT workable — waking for it would only
+# produce a status change. POLICY v11: an account wall is no longer such a
+# profile — fill.mjs logs in / resets / registers itself (assets/account.mjs)
+# — BUT only when the agent can read the mailbox that owns the account. A
+# profile may declare "requiresMailbox": "<e-mail>"; the host counts as cached
+# only while worker/.env has a <TAG>_IMAP_USER equal to that address, so the
+# agent is not woken to fail on a wall it cannot pass yet.
+IMAP_USERS=$(env | sed -n 's/^[A-Z0-9]*_IMAP_USER=//p' | tr 'A-Z' 'a-z' | tr '\\n' ' ')
 CACHED=$(for d in /workspace/agent/form-scripts/*/; do
   n=$(basename "$d")
-  if [ -f "$d/fill.mjs" ]; then
+  if [ -f "$d/profile.json" ]; then
+    if grep -q '"strategy"[[:space:]]*:[[:space:]]*"manual_review"' "$d/profile.json"; then continue; fi
+    need=$(sed -n 's/.*"requiresMailbox"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' "$d/profile.json" | head -1 | tr 'A-Z' 'a-z')
+    if [ -n "$need" ] && ! echo " $IMAP_USERS " | grep -q " $need "; then continue; fi
     echo "$n"
-  elif [ -f "$d/profile.json" ] && ! grep -q '"strategy"[[:space:]]*:[[:space:]]*"manual_review"' "$d/profile.json"; then
+  elif [ -f "$d/fill.mjs" ]; then
     echo "$n"
   fi
 done 2>/dev/null | tr '\\n' ' ')
@@ -364,7 +373,9 @@ ${TURN_BUDGET}
 
 ✍️ ЛИСТ ПИШЕТЬСЯ ОСТАННІМ, УСЕРЕДИНІ ЦЬОГО Ж ПРОГОНУ. Заповни ВСЕ, крім супровідного листа: контакти, CV, питання роботодавця, телефон. Аж коли решта готова і нічого вирішувати не лишилось — подивись, чого форма просить: текстове поле → напиши лист за \`skills/soknad-writing/SKILL.md\` (спершу перевір ліміт символів) і встав; файл → напиши, збережи файлом і прикріпи поруч із CV; поля для листа немає взагалі → НЕ пиши його. Готовий текст збережи в \`applications.cover_letter_no\`/\`cover_letter_uk\` у цьому ж прогоні.
 
-Причина: лист пише Claude з підписки, і він не має писатися для заявки, яка до форми так і не дійшла. Заповнення першим також викриває акаунт-стіну, CAPTCHA чи мертвий URL ДО того, як за лист заплачено.
+Причина: лист пише Claude з підписки, і він не має писатися для заявки, яка до форми так і не дійшла. Заповнення першим також викриває CAPTCHA чи мертвий URL ДО того, як за лист заплачено.
+
+🔐 АКАУНТ — ПЕРШИЙ КРОК, ДО ЗАПОВНЕННЯ (${MARKER}, правило власника 03.09: «спочатку перевірити, чи є акаунт; є — залогінитись; нема — зареєструватись; потім заповнювати»). Одразу після cookie-банера скрипт викликає \`ensureAccount()\` з \`skills/form-filling/assets/account.mjs\` (фаза 0b у SKILL.md): збережений пароль із \`site_credentials\` → логін; «e-post уже зареєстровано» → скидання пароля, код з пошти власника через IMAP (\`assets/imap-mail.mjs\`), новий пароль у \`site_credentials\`; акаунта нема → реєстрація з підтвердженням через ту саму пошту. Акаунт-стіна САМА ПО СОБІ більше не причина для manual_review. У вихідному JSON скрипта є поле \`account.mode\`: \`guest|login|reset|register\` — форма доступна, заповнюй далі; \`blocked\` — став \`manual_review\` і запиши \`account.reason\` в \`error_message\` (це лише: немає IMAP-доступу до скриньки акаунта, CAPTCHA на вході, або в профілю платформи ще нема хуків). Пароль ніколи не проходить через твій контекст, вивід скрипта чи Telegram — його зберігає сам скрипт. Для нової платформи, що має стіну, під час recon напиши хуки \`detect/login/requestReset/completeReset/register\` у \`fill.mjs\` за зразком \`form-scripts/candidate.webcruiter.com/fill.mjs\`.
 
 📤 ВІДПРАВЛЕННЯ. Кроку схвалення вже заповненої форми в процесі немає (фаза 5 у SKILL.md): форма заповнена разом із листом → скріншот і список «поле → значення» → одразу натисни submit → постав \`applications.status='sent'\` → надішли скріншот і список у ТЕХНІЧНИЙ бот як квитанцію БЕЗ кнопок. Рядків у \`application_confirmations\` не створюй, інлайн-кнопок не шли і нічого не чекай: користувач схвалив цю вакансію кнопкою «✅ Підтвердити» на картці — саме вона й створила цей рядок.
 

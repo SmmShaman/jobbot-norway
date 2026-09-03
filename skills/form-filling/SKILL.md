@@ -88,30 +88,32 @@ of this skill as the Playwright mechanics.
    with `"submit": true`. No recon, no DOM dumps, no exploratory screenshots.
    Eight platforms cover 80% of the queue, so on most applications this phase is
    the entire job. Read `CACHE.md` for the I/O contract; it is short and exact.
-0b. **Account-wall probe — BEFORE any recon spending (owner's rule, 2026-08-06:
-   «перевірка акаунта — найперше, до витрати токенів»).** On a cache miss, do
-   NOT start phase 1 yet. Open the apply URL and answer one cheap question
-   first: can this form be submitted as a guest, or does it sit behind a
-   login/registration step? If a login wall exists, probe whether the profile
-   email (`stuardbmw@gmail.com`) is already registered — most ATS reveal this
-   instantly and cheaply (the registration step errors with "already
-   registered", or the password-reset form accepts the address). Three
-   outcomes:
-   - **Guest-friendly** → proceed to phase 1 as usual.
-   - **Wall + email already registered + no IMAP access to the owning
-     mailbox** (see «Password reset via IMAP» below — as of 2026-08-06 the
-     agent has IMAP for `stuardaukro@gmail.com` ONLY, and existing ATS
-     accounts belong to `stuardbmw@gmail.com`) → set `manual_review` NOW,
-     write the wall into `applications.error_message` (ALWAYS the DB column,
-     not only the tech-bot message), and end the turn. Do not recon, do not
-     write the letter: on 2026-08-06 both Storebrand (Recman) and Europris
-     (Talentech) burned a full fill run only to hit this exact wall at the
-     last step.
-   - **Wall + IMAP access to the owning mailbox exists** → run the password
-     reset / registration flow below, then continue into phase 1.
-   Cost note: skipping recon here means the platform does not get cached this
-   run — that is fine; the cache investment belongs to the first application
-   that can actually reach submit.
+0b. **Ensure the account — BEFORE any field is filled (owner's rule,
+   2026-09-03: «спочатку перевірити, чи є акаунт; є — залогінитись; нема —
+   зареєструватись; і лише потім заповнювати»).** Run `assets/account.mjs`
+   `ensureAccount()` right after the cookie banner, on every host — cached or
+   not. It asks the site one cheap question (`detect`: guest form / login
+   wall / "this e-mail is already registered") and then does the whole account
+   dance itself: stored password from `site_credentials` → log in; e-mail
+   already registered → password reset, one-time code read from the
+   applicant's mailbox over IMAP (`assets/imap-mail.mjs`), new password stored;
+   no account → register, verify via IMAP, store. Outcome `mode`:
+   - `guest` / `login` / `reset` / `register` → the form is now reachable;
+     continue with the fill phases as usual.
+   - `blocked` → `manual_review` NOW with `outcome.reason` written into
+     `applications.error_message` (ALWAYS the DB column, not only the tech-bot
+     message), no recon, no letter. The only `blocked` reasons left are: no
+     IMAP access to the mailbox that owns the account (add
+     `<TAG>_IMAP_USER/<TAG>_IMAP_PASSWORD` to `worker/.env`), a CAPTCHA on the
+     login, or a hook the platform profile does not have yet.
+   An account wall by itself is **no longer** a manual_review reason — on
+   2026-08-06 Storebrand (Recman) and Europris (Talentech) burned full fill
+   runs to hit it at the last step, and every Recman posting from the same
+   employer has been hand-off only since. Per-employer accounts (Recman keys
+   its candidate DB by corporation id) use `scope` → credential key
+   `apply.recman.page#801`; host-wide accounts (Webcruiter) use the bare host.
+   The password never appears in the fill output, the agent context, Telegram
+   or a screenshot: the script that sets it is the script that stores it.
 1. **Recon — only when the cache misses.** Visit the form fresh, headless, and
    map its structure before writing any fill logic. Use `assets/recon.mjs`
    (`dumpFields`, `dumpButtons`, `findByExactText`) to enumerate inputs/buttons
@@ -377,56 +379,41 @@ both LinkedIn). For the agent pipeline:
    that site's `sites/<domain>.json` profile so a future job on the same
    domain doesn't need to rediscover it live.
 
-## Registration flow via IMAP (planned architecture — not yet implemented)
+## Account flow via IMAP (implemented 2026-09-03)
 
 Some sites require a registered account before the application form is even
-reachable (as opposed to a guest-friendly form like easycruit — see
-`sites/easycruit.com.json`). The legacy `worker/register_site.py` only does
-Telegram Q&A relay via Skyvern and is **not** being patched or extended —
-account registration for the agent-driven Playwright flow is meant to be a
-clean, separate implementation. As of 2026-07-19, this is design-only:
-**zero code has been written**.
+reachable (Webcruiter: host-wide, redirects to `/Account/spalogin`; Recman:
+per-employer — the same e-mail is a guest on one employer's instance and
+"already registered" on another). Since 2026-09-03 this is code, not design:
 
-Design (agreed 2026-07-18):
-1. Detect the site's login type first (password-based signup vs. magic-link).
-2. Register using a generated password (store it — see below).
-3. The agent reads the verification email itself via IMAP — no Telegram relay
-   needed for this step. Wait up to 5 minutes, poll only `UNSEEN` messages
-   from the site's own domain, extract the code or link from the message body.
-4. Complete verification (enter code, or navigate the extracted link) and
-   proceed into the actual application form.
-5. Persist flow state and any generated password into the `registration_flows`
-   table so re-runs don't re-register.
+| Module | Job |
+|---|---|
+| `assets/env.mjs` | reads `worker/.env`; lists every `<TAG>_IMAP_USER`/`<TAG>_IMAP_PASSWORD` pair = one mailbox the agent may read |
+| `assets/imap-mail.mjs` | `waitForMail({mailbox, fromIncludes, since, extract})` — polls Gmail IMAP (BODY.PEEK, mails stay unread), returns the one-time code or link |
+| `assets/credentials.mjs` | `getCredentials` / `saveCredentials` / `markLogin` on `site_credentials` via PostgREST (`SUPABASE_URL` + `SUPABASE_SERVICE_KEY`), `generatePassword()`, `credentialDomain(host, scope)` |
+| `assets/account.mjs` | `ensureAccount({page, site, applicant, userId})` — the orchestration; the platform profile supplies hooks `detect`, `login`, `requestReset`, `completeReset`, `register`, `completeRegistration` |
 
-Prerequisites already verified and ready to use once this is built:
-`AUKRO_IMAP_USER` / `AUKRO_IMAP_PASSWORD` in `worker/.env`; connectivity to
-`imap.gmail.com:993` over SSL confirmed working from throwaway test scripts.
+Rules:
+1. The mailbox is chosen by the **applicant's e-mail**: accounts on ATS sites
+   belong to `stuardbmw@gmail.com`, so the reset/verification mail lands there
+   and the agent needs `<TAG>_IMAP_USER=stuardbmw@gmail.com` with a Gmail app
+   password. `AUKRO_IMAP_*` (stuardaukro@) covers only accounts the agent
+   itself registers on that address. No pair for the mailbox → `blocked`.
+2. Passwords are generated (16 chars) and stored in `site_credentials`
+   (`site_domain` = host or `host#scope`, unique with `email`; plaintext, same
+   as the COWI row from 26.07). `registration_flows` is the legacy Skyvern-era
+   table and is not written by this flow.
+3. One reset / registration attempt per platform per run. A failed attempt
+   (no mail within 5 min, extra identity questions, SMS 2FA, CAPTCHA) →
+   `manual_review` with the reason in `applications.error_message`.
+4. Never bypass a CAPTCHA; never automate LinkedIn login (see below).
+5. `profile.json` may declare `"requiresMailbox": "stuardbmw@gmail.com"` —
+   the fill-poller gate then treats the host as cached only while that
+   mailbox has an IMAP pair in `worker/.env`, so the agent is not woken to
+   fail on a wall it cannot pass yet.
 
-### Password reset via IMAP (extension, 2026-08-06)
-
-The account walls hit in production (Recman/Karrieresenteret, Talentech/
-hr-manager, Webcruiter) are NOT "no account" cases — they are "this email is
-already registered" cases, and the registered address is the profile email
-**`stuardbmw@gmail.com`**, not the service mailbox. The recovery flow is
-therefore a password RESET, not a fresh registration:
-
-1. Gate: this flow is allowed ONLY when `worker/.env` carries IMAP credentials
-   for the mailbox that owns the account (`BMW_IMAP_USER`/`BMW_IMAP_PASSWORD`
-   for stuardbmw accounts; `AUKRO_IMAP_*` covers only accounts the agent itself
-   registered on stuardaukro@). No credentials for the owning mailbox → the
-   wall stays a `manual_review`, phase 0b already handled it.
-2. Trigger the ATS "forgot password" form with the profile email, then read the
-   reset email over IMAP exactly like the verification flow above (UNSEEN only,
-   sender-domain + time-window scoped, wait ≤5 min).
-3. Set a generated password, persist it into `registration_flows` (never in
-   git/chat/Telegram), log in, and continue into the normal fill phases.
-4. One reset attempt per platform per turn; a failed reset (no email arrives,
-   extra identity questions, 2FA to a phone) → `manual_review` with the reason
-   in `applications.error_message`.
-
-As of 2026-08-06 `BMW_IMAP_*` is NOT set — the owner has to create a Gmail App
-Password for stuardbmw@gmail.com and place it in `worker/.env` before this
-branch can activate.
+The legacy `worker/register_site.py` (Skyvern + Telegram Q&A relay) stays
+untouched and unused.
 
 ## Known gotchas (check for these on every new site)
 

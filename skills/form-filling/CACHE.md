@@ -55,7 +55,10 @@ company on that ATS — that is the whole point.
 ## fill.mjs I/O contract
 
 Called as `node fill.mjs input.json`. It must not read anything else and must
-not talk to the database or Telegram — the agent owns all of that.
+not talk to Telegram — the agent owns that. The one database exception is
+`site_credentials` through `assets/credentials.mjs` (used by
+`assets/account.mjs`): a password the script sets is stored by the script, so
+it never passes through the agent's context, the output JSON or Telegram.
 
 **Input** (`input.json`):
 
@@ -71,9 +74,12 @@ not talk to the database or Telegram — the agent owns all of that.
   "coverLetter": "…",
   "answers": { "Norsk muntlig": "Ja", "Førerkort": "Nei" },
   "submit": false,
-  "outDir": "/tmp/run-<application_id>"
+  "outDir": "/tmp/run-<application_id>",
+  "userId": "<applications.user_id>"
 }
 ```
+
+`userId` scopes the `site_credentials` lookup (service key bypasses RLS).
 
 `answers` is keyed by a **substring of the field's visible label** — per-job
 questions differ, so the script matches loosely and reports what it could not
@@ -100,6 +106,7 @@ place rather than guessing.
 | `required_missing` | required fields still empty; a non-empty list means do NOT submit |
 | `submitted` | whether the real submit button was clicked (mirrors `submit` in the input) |
 | `error` | human-readable failure, `null` on success |
+| `account` | result of `ensureAccount()`: `{ "mode": "guest"\|"login"\|"reset"\|"register"\|"blocked", "email", "siteDomain", "reason" }` — `blocked` means do NOT recon; set `manual_review` with `reason` in `error_message` |
 
 On failure: exit non-zero, `ok: false`, `error` set. The agent then falls back
 to recon for this run and updates the profile.

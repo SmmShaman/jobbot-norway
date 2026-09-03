@@ -1,9 +1,17 @@
 {
   "domain": "apply.recman.page",
-  "notes": "Recman is a third-party application-form host used by multiple Norwegian employers (jobs are discovered via NAV/FINN, but the actual apply flow happens on apply.recman.page, not the job board). Test case: job 'Vi søker salgskonsulent B2B og B2C' (KARRIERESENTERET AS), apply URL https://apply.recman.page/job_post.php?id=482699&path=nav&sub_id=801. 4-step wizard, tabs labelled: Last opp CV / Profil / Spørsmål / Gjennomgå og søk.",
+  "notes": "Recman is a third-party application-form host used by multiple Norwegian employers (jobs are discovered via NAV/FINN, but the actual apply flow happens on apply.recman.page, not the job board). Test case: job 'Vi søker salgskonsulent B2B og B2C' (KARRIERESENTERET AS), apply URL https://apply.recman.page/job_post.php?id=482699&path=nav&sub_id=801. 4-step wizard, tabs labelled: Last opp CV / Profil / Spørsmål / Gjennomgå og søk. UPDATE 2026-09-03 (POLICY v11): the wall is now handled by the account step in fill.mjs, not by a manual_review shortcut — see accountFlow. Because Recman's login/reset are reCAPTCHA-gated, a walled employer still ends in manual_review, but with the exact reason, and the hooks are ready should the CAPTCHA ever go away or the owner store a password by hand (site_credentials, site_domain apply.recman.page#<sub_id>).",
   "entryFlow": [
-    { "step": "dismiss cookie banner", "selector": "text=Aksepter alle", "note": "getByText(exact:false) — may not appear on every load" },
-    { "step": "click apply button", "selector": "text=Søk nå", "note": "getByText(exact:false).first() — opens the application dialog/wizard" }
+    {
+      "step": "dismiss cookie banner",
+      "selector": "text=Aksepter alle",
+      "note": "getByText(exact:false) — may not appear on every load"
+    },
+    {
+      "step": "click apply button",
+      "selector": "text=Søk nå",
+      "note": "getByText(exact:false).first() — opens the application dialog/wizard"
+    }
   ],
   "steps": [
     {
@@ -16,14 +24,30 @@
           "gotcha": "plain native input, setInputFiles works directly; use a persistent local path (e.g. /workspace/agent/assets/cv.pdf), not /tmp"
         }
       ],
-      "advanceButton": { "role": "button", "name": "Neste", "gotcha": "use getByRole, not getByText — getByText('Neste') false-matched an unrelated paragraph containing the word" }
+      "advanceButton": {
+        "role": "button",
+        "name": "Neste",
+        "gotcha": "use getByRole, not getByText — getByText('Neste') false-matched an unrelated paragraph containing the word"
+      }
     },
     {
       "name": "Profil",
       "fields": [
-        { "label": "Fornavn*", "selector": "input[name=\"firstName\"]", "type": "text" },
-        { "label": "Etternavn*", "selector": "input[name=\"lastName\"]", "type": "text" },
-        { "label": "E-post*", "selector": "input[name=\"email\"]", "type": "text" },
+        {
+          "label": "Fornavn*",
+          "selector": "input[name=\"firstName\"]",
+          "type": "text"
+        },
+        {
+          "label": "Etternavn*",
+          "selector": "input[name=\"lastName\"]",
+          "type": "text"
+        },
+        {
+          "label": "E-post*",
+          "selector": "input[name=\"email\"]",
+          "type": "text"
+        },
         {
           "label": "phone (placeholder '+1 234 567 89 00')",
           "selector": "input[name=\"mobilePhone.number\"]",
@@ -32,7 +56,10 @@
           "gotcha": "the .ApplyV2InputPhone__fields__select country dropdown (list items show English country names, e.g. 'Norway' not 'Norge') has ZERO effect on the actual value. The mask infers the calling code from the first digits typed. Ignore the dropdown entirely; type calling code + national number as one digit string directly into the number field."
         }
       ],
-      "advanceButton": { "role": "button", "name": "Neste" }
+      "advanceButton": {
+        "role": "button",
+        "name": "Neste"
+      }
     },
     {
       "name": "Spørsmål",
@@ -44,7 +71,10 @@
           "gotcha": "field names are dynamically generated per job posting (e.g. input[name=\"text_7905\"]); NOT stable across postings. The actual question text is only available via the associated <label> (e.g. 'Ønsker du å jobbe fulltid med salg og markedsføring?'). Answer is judgment-based per question, similar to cover-letter drafting — not a fixed value."
         }
       ],
-      "advanceButton": { "role": "button", "name": "Neste" }
+      "advanceButton": {
+        "role": "button",
+        "name": "Neste"
+      }
     },
     {
       "name": "Gjennomgå og søk",
@@ -57,7 +87,10 @@
           "gotcha": "NOT a real <textarea> despite the visual appearance and an associated <label for=\"...\">. Actual DOM: <div class=\"ApplyV2Textarea__textarea\" contenteditable=\"plaintext-only\">. locator('textarea') finds nothing. Use assets/text-fields.mjs fillContentEditable (click then keyboard.type). Live counter shown in the label as e.g. '0/1500' — confirmed real limit is 1500 chars (not the 1400 originally assumed)."
         }
       ],
-      "submitButton": { "role": "button", "name": "Søk" }
+      "submitButton": {
+        "role": "button",
+        "name": "Søk"
+      }
     }
   ],
   "verifiedRun": {
@@ -65,5 +98,20 @@
     "applicationId": "f7c3acd8-5081-4f53-8d14-dd17e989d979",
     "jobId": "1396f6a9-3c1a-4ba6-843f-12908b33c98b",
     "result": "Phase 1 (fill-only, no submit) completed successfully: CV uploaded, profile fields filled, phone rendered correctly as +47 92564334, custom question answered, cover letter filled at 1221/1500 chars. Submit button 'Søk' was NOT clicked."
+  },
+  "strategy": "account",
+  "requiresAccount": "per-employer",
+  "hasGuestApply": true,
+  "accountFlow": {
+    "implementedIn": "sites/recman.page/fill.mjs (hooks for assets/account.mjs)",
+    "scope": "sub_id from the apply URL → site_credentials.site_domain = apply.recman.page#<sub_id> (candidate DB is per employer / corporation id)",
+    "detect": "after typing the e-mail on «Profil»: .ErrorMessageDuplicate → wall; then the employer's /login page is probed for reCAPTCHA",
+    "captcha": "login (api/login) and reset (api/reset-password/init) both return HTTP 422 «Invalid Recaptcha», reason 5, from a headless browser (invisible reCAPTCHA Enterprise, site key 6LePxkklAAAAABJyYBkk3EcWGNNlGYjDS63WJDp4) — measured 2026-09-03 on karrieresenteret.recman.page (corp 1587 / sub 801). Never bypassed: outcome `captcha` → manual_review with that reason.",
+    "login": "/login?email=…&postId=<jobId>: input[name=email], input[name=password], button[type=submit] «Logg inn»; social (Google/Microsoft/Facebook/LinkedIn) and SMS logins exist too",
+    "reset": "/forgot-password: 4 steps — e-mail + «Send kode» (api/reset-password/init) → one-time code by mail from reset@recman.io, valid 300 s (api/reset-password/validate) → password + repeatPassword (api/reset-password/reset) → done",
+    "walledEmployers": {
+      "801": "Karrieresenteret AS / Din salgskonsulent AS (guest apply 2026-07-18 created the account)",
+      "2420": "Emera Rekruttering"
+    }
   }
 }
