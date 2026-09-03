@@ -69,7 +69,8 @@ it never passes through the agent's context, the output JSON or Telegram.
   "applicant": {
     "firstName": "Vitalii", "lastName": "Berbeha",
     "email": "…", "phone": "+47…",
-    "address": "…", "postalCode": "…", "city": "…"
+    "address": "…", "postalCode": "…", "city": "…",
+    "birthDate": "yyyy-mm-dd", "gender": "male|female", "nationality": "Ukraina", "workPermit": true
   },
   "coverLetter": "…",
   "answers": { "Norsk muntlig": "Ja", "Førerkort": "Nei" },

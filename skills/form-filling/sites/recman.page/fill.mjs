@@ -235,7 +235,9 @@ async function main() {
       throw new Error('recman: phone number already registered with this employer and login is CAPTCHA-gated');
     }
 
-    if (applicant.birthDate) {
+    // Profil fields vary per employer: Karrieresenteret (sub 801) asks only
+    // name/e-mail/phone, others add birth date and address. Fill what exists.
+    if (applicant.birthDate && (await page.locator('[name="dateOfBirth.day"]').count())) {
       const [year, month, day] = applicant.birthDate.split('-');
       const dayField = page.locator('[name="dateOfBirth.day"]');
       const monthField = page.locator('[name="dateOfBirth.month"]');
@@ -254,7 +256,7 @@ async function main() {
     }
 
     const addressAlreadyResolved = await page.locator('.ApplyV2AddressSelect__input__single-value').count();
-    if (!addressAlreadyResolved && applicant.address) {
+    if (!addressAlreadyResolved && applicant.address && (await page.locator('#address').count())) {
       await page.locator('#address').click();
       await page.locator('#address').pressSequentially(applicant.address, { delay: 20 });
       await page.waitForTimeout(1500);

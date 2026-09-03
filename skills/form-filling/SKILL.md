@@ -394,11 +394,13 @@ per-employer — the same e-mail is a guest on one employer's instance and
 | `assets/account.mjs` | `ensureAccount({page, site, applicant, userId})` — the orchestration; the platform profile supplies hooks `detect`, `login`, `requestReset`, `completeReset`, `register`, `completeRegistration` |
 
 Rules:
-1. The mailbox is chosen by the **applicant's e-mail**: accounts on ATS sites
-   belong to `stuardbmw@gmail.com`, so the reset/verification mail lands there
-   and the agent needs `<TAG>_IMAP_USER=stuardbmw@gmail.com` with a Gmail app
-   password. `AUKRO_IMAP_*` (stuardaukro@) covers only accounts the agent
-   itself registers on that address. No pair for the mailbox → `blocked`.
+1. The mailbox is chosen by the **applicant's e-mail** in the CV profile. Owner's
+   decision 2026-09-03: **the bot registers, applies and logs in as
+   `stuardaukro@gmail.com`** (the agent's own mailbox, `AUKRO_IMAP_*` in
+   `worker/.env`; it forwards to the owner's private stuardbmw@, whose password is
+   never shared with the bot). Accounts created earlier on stuardbmw@ (Webcruiter,
+   Recman employers, COWI) are legacy: for the bot they simply do not exist — it
+   registers fresh on stuardaukro@. No pair for the applicant's mailbox → `blocked`.
 2. Passwords are generated (16 chars) and stored in `site_credentials`
    (`site_domain` = host or `host#scope`, unique with `email`; plaintext, same
    as the COWI row from 26.07). `registration_flows` is the legacy Skyvern-era
@@ -407,7 +409,7 @@ Rules:
    (no mail within 5 min, extra identity questions, SMS 2FA, CAPTCHA) →
    `manual_review` with the reason in `applications.error_message`.
 4. Never bypass a CAPTCHA; never automate LinkedIn login (see below).
-5. `profile.json` may declare `"requiresMailbox": "stuardbmw@gmail.com"` —
+5. `profile.json` may declare `"requiresMailbox": "stuardaukro@gmail.com"` —
    the fill-poller gate then treats the host as cached only while that
    mailbox has an IMAP pair in `worker/.env`, so the agent is not woken to
    fail on a wall it cannot pass yet.

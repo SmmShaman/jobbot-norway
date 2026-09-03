@@ -112,6 +112,7 @@
     "walledEmployers": {
       "801": "Karrieresenteret AS / Din salgskonsulent AS (guest apply 2026-07-18 created the account)",
       "2420": "Emera Rekruttering"
-    }
+    },
+    "ownerMailbox2026_09_03": "Applicant e-mail is now stuardaukro@gmail.com: on sub_id 801 (Karrieresenteret) the guest wizard ran to the letter step with NO wall (measured 03.09, submit:false). The bmw walls above are legacy. Profil fields differ per employer (801 asks only name/e-mail/phone) — fill.mjs fills what exists."
   }
 }

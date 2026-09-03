@@ -29,12 +29,18 @@
     "hooksTested": {
       "detect": true,
       "login": true,
-      "requestReset": "2026-09-03 recon (link received)",
-      "completeReset": "2026-09-03 recon",
-      "register": false,
-      "completeRegistration": false,
-      "twoFactorCode": false
-    }
+      "requestReset": "2026-09-03 (link received, reset completed on the legacy bmw account)",
+      "completeReset": "2026-09-03",
+      "register": "2026-09-03 LIVE — stuardaukro@ account created",
+      "completeRegistration": "2026-09-03 LIVE — ConfirmEmail link via IMAP",
+      "twoFactorCode": false,
+      "importMasterCv": "2026-09-03 LIVE"
+    },
+    "registerGotchas": [
+      "Unknown e-mail + ReturnUrl → «new profile + application» view (#appl) without a password step; register on the BARE spalogin page instead (e-mail → #start-continue-button → #register-view).",
+      "Phone mask is knockout-bound: fill() leaves Register.MobilePhone.Number empty → 422 «Mobilnummer må fylles ut»; type with keyboard.type.",
+      "«Bekrefte e-post» mail from noreply@webcruiter.com carries a /Account/ConfirmEmail link; opening it confirms («E-posten din er nå bekreftet»)."
+    ]
   },
   "entryFlow": [
     {
@@ -274,5 +280,6 @@
   },
   "knownState": "A draft (Webcruiter-ID 4993025282) for advert 5171470499 with TEST answers exists on the account since 2026-09-03; it is harmless unless someone presses Send søknad. Delete it by hand via 'Slette søknaden' if the advert ever becomes a real application.",
   "revisitWhen": "First real submit — verify the post-click confirmation (modal? 'Takk for søknaden'?) and record it here; first advert that shows the 'Legg til CV' upload widget or RequireAttachment; register flow when a second applicant without a Webcruiter profile appears.",
-  "credentialNote": "A password for stuardbmw@gmail.com is stored in site_credentials (site_domain candidate.webcruiter.com, reset 2026-09-03), so login needs no IMAP. requiresMailbox is deliberately NOT set: the gate would otherwise park this host until BMW_IMAP_* exists, while login already works. Reset/register fall back to `blocked` without IMAP for stuardbmw@."
+  "credentialNote": "Owner decision 2026-09-03: the bot works ONLY as stuardaukro@gmail.com. The account was registered by the bot itself (fill.mjs register hook → «Bekrefte e-post» link read over AUKRO IMAP → login), password in site_credentials row e569e073 (site_domain candidate.webcruiter.com, email stuardaukro@gmail.com). Master CV imported once from assets/cv.pdf (importMasterCv → api/upload → «Ja, jeg vil bruke denne» → OK → replacewithparsed). The older stuardbmw@ row dbfaa641 is INACTIVE/legacy. requiresMailbox is deliberately NOT set: login with the stored password needs no IMAP.",
+  "inputExtrasRequired": "For a fresh profile Personalia needs applicant.birthDate (yyyy-mm-dd), applicant.gender ('male'|'female'), applicant.nationality (option label, e.g. 'Ukraina'), applicant.workPermit (bool) — measured 2026-09-03; missing ones land in required_missing."
 }

@@ -49,6 +49,14 @@ function advertIdFrom(url) {
   return m[1];
 }
 
+// #BirthDate is <input type="date"> (label says dd.mm.åååå, but fill() wants
+// ISO yyyy-mm-dd — "Malformed value" otherwise). Accept both shapes.
+function toIsoDate(v) {
+  const s = String(v || '').trim();
+  const nb = s.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+  return nb ? `${nb[3]}-${nb[2]}-${nb[1]}` : s;
+}
+
 function splitPhone(phone) {
   const d = String(phone || '').replace(/\D/g, '');
   if (!d) return { cc: '', num: '' };
@@ -104,7 +112,9 @@ function makeSite(advertId, applicant) {
     name: 'Webcruiter (Talentech) candidate portal',
     mailFrom: 'webcruiter',
     resetMailFilter: { extract: (t) => extractLink(t, `${HOST}/Account/ResetPassword`) || extractLink(t, HOST) },
-    registerMailFilter: { extract: (t) => extractCode(t, /\b(\d{4,8})\b/) },
+    // «Bekrefte e-post» mail carries a ConfirmEmail LINK (measured 2026-09-03);
+    // a one-time code is the fallback shape.
+    registerMailFilter: { subjectIncludes: 'Bekreft', extract: (t) => extractLink(t, `${HOST}/Account/ConfirmEmail`) || extractLink(t, HOST) || extractCode(t, /\b(\d{4,8})\b/) },
 
     detect: async (page) => {
       await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 60000 });
@@ -162,27 +172,57 @@ function makeSite(advertId, applicant) {
     // (the applicant already has a profile); selectors from the SPA templates.
     register: async (page, { email, password, applicant: a }) => {
       if (!(await visible(page.locator('#Register_Password_show'), 1000))) {
-        const { status } = await startWithEmail(page, email);
-        if (status === 200) return 'already-registered';
+        // With a ReturnUrl to an advert, an unknown e-mail is routed into a
+        // «new profile + application in one» view (#appl, #start-save-button)
+        // that never asks for a password. Register on the BARE login page
+        // instead: e-mail → «Er dette riktig e-postadresse?» → #start-continue-
+        // button → register view (measured 2026-09-03 with stuardaukro@).
+        await page.goto(`${BASE}/nb-no/Account/spalogin`, { waitUntil: 'networkidle', timeout: 60000 });
+        await acceptCookies(page);
+        await page.locator('#Start_Email').fill(email);
+        const [resp] = await Promise.all([
+          page.waitForResponse((r) => r.url().includes('/api/account/validateemail'), { timeout: 30000 }),
+          page.locator('#start-next-button').click(),
+        ]);
+        if (resp.status() === 200) return 'already-registered';
+        if (await visible(page.locator('#start-continue-button'), 5000)) {
+          await page.locator('#start-continue-button').click();
+        }
         await page.waitForSelector('#Register_Password_show', { timeout: 15000 });
       }
       const { cc, num } = splitPhone(a.phone);
-      await page.locator('#Register_FullName').fill(`${a.firstName || ''} ${a.lastName || ''}`.trim());
-      await page.locator('#Register_MobilePhone_CountryCode').fill(cc);
-      await page.locator('#Register_MobilePhone').fill(num);
-      await page.locator('#Register_Password_show').fill(password);
+      // The phone widget is a knockout mask: fill() leaves the hidden
+      // Register.MobilePhone.Number empty («Mobilnummer må fylles ut»); real
+      // key presses populate it (measured 2026-09-03).
+      await page.locator('#Register_MobilePhone_CountryCode').click();
+      await page.keyboard.press('Control+A');
+      await page.keyboard.type(cc, { delay: 30 });
+      await page.locator('#Register_MobilePhone').click();
+      await page.keyboard.press('Control+A');
+      await page.keyboard.type(num, { delay: 30 });
+      await page.locator('#Register_FullName').click();
+      await page.keyboard.type(`${a.firstName || ''} ${a.lastName || ''}`.trim(), { delay: 10 });
+      await page.locator('#Register_Password_show').click();
+      await page.keyboard.type(password, { delay: 10 });
+      await sleep(500);
       const terms = page.locator('form#register-form input[type=checkbox]');
       if (await terms.count() && !(await terms.first().isChecked())) await terms.first().check({ force: true });
       await page.locator('#register-next-button').click();
       await sleep(2500);
       if (await visible(page.locator('#Login_Code'), 3000)) return 'verify-code';
-      if (!/spalogin/i.test(page.url())) return 'done';
+      if (!/spalogin/i.test(page.url())) return 'verify-link'; // account exists, e-mail must be confirmed
       const txt = lc(await page.locator('form#register-form').innerText().catch(() => ''));
       if (/allerede|already/.test(txt)) return 'already-registered';
       throw new Error(`register: unexpected state after submit: ${txt.slice(0, 200)}`);
     },
 
     completeRegistration: async (page, { mail }) => {
+      if (/^https?:\/\//.test(String(mail.value))) {
+        await page.goto(String(mail.value), { waitUntil: 'networkidle', timeout: 60000 });
+        await acceptCookies(page);
+        const txt = lc(await page.locator('body').innerText().catch(() => ''));
+        return /bekreftet|confirmed/.test(txt);
+      }
       await page.locator('#Login_Code').fill(String(mail.value));
       await page.locator('#verifycode-next-button').click();
       return leftLogin(page, 30000);
@@ -206,6 +246,32 @@ async function expand(page, name) {
   await h.click();
   await sleep(1500);
   return isExpanded(page, name);
+}
+
+// Import the master CV from a PDF (measured 2026-09-03 on a fresh account).
+async function importMasterCv(page, cvPath, log = () => {}) {
+  await page.goto(`${BASE}/nb-no/CV#upload`, { waitUntil: 'networkidle', timeout: 60000 });
+  await sleep(1500);
+  const [up] = await Promise.all([
+    page.waitForResponse((r) => /api\/upload(\?|$)/.test(r.url()), { timeout: 120000 }),
+    page.locator('input#cvfile').last().setInputFiles(cvPath),
+  ]);
+  if (up.status() >= 400) { log(`CV import: api/upload ${up.status()}`); return false; }
+  await sleep(1500);
+  await page.getByText('Ja, jeg vil bruke denne', { exact: false }).first().click();
+  await sleep(1200);
+  const ok = page.locator('a, button').filter({ hasText: /^\s*OK\s*$/ }).locator('visible=true').first();
+  const [saved] = await Promise.all([
+    page.waitForResponse((r) => /replacewithparsed/.test(r.url()), { timeout: 60000 }).catch(() => null),
+    ok.click(),
+  ]);
+  if (!saved || saved.status() >= 400) { log(`CV import: replacewithparsed ${saved ? saved.status() : 'no response'}`); return false; }
+  await page.waitForURL((u) => /#master/.test(u.href), { timeout: 30000 }).catch(() => {});
+  await sleep(1500);
+  const txt = await page.locator('body').innerText().catch(() => '');
+  const done = /Arbeidserfaring/.test(txt);
+  log(`CV import: master CV ${done ? 'now has Arbeidserfaring' : 'still empty'}`);
+  return done;
 }
 
 async function waitSave(page, urlPart, action, timeout = 30000) {
@@ -278,7 +344,7 @@ async function main() {
         { label: 'Fornavn og etternavn', sel: '#Name', value: `${applicant.firstName || ''} ${applicant.lastName || ''}`.trim() },
         { label: 'Landskode', sel: '#MobilePhone_CountryCode', value: cc },
         { label: 'Mobilnummer', sel: '#MobilePhone', value: num },
-        { label: 'Fødselsdato', sel: '#BirthDate', value: applicant.birthDate || '' },
+        { label: 'Fødselsdato', sel: '#BirthDate', value: toIsoDate(applicant.birthDate) }, // <input type=date> → ISO
         { label: 'Adresse', sel: '#Address', value: applicant.address || '' },
         { label: 'Postnummer', sel: '#ZipCode', value: applicant.postalCode || '' },
         { label: 'Poststed', sel: '#City', value: applicant.city || '' },
@@ -301,7 +367,16 @@ async function main() {
       if (!(await page.locator('input[name="Gender"]:checked').count())) {
         const g = lc(applicant.gender);
         const id = /^(m|male|mann)$/.test(g) ? '#genderMale' : /^(f|female|kvinne)$/.test(g) ? '#genderFemale' : null;
-        if (id) { await page.locator(`label[for="${id.slice(1)}"]`).click(); result.filled.push({ label: 'Juridisk kjønn', value: g }); }
+        if (id) {
+          // The radio is styled away (a forced check() reports "did not change
+          // its state"); a DOM-level click on the input runs the knockout
+          // binding and the onclick validator all the same.
+          const lbl = page.locator(`label[for="${id.slice(1)}"]`);
+          if (await lbl.count()) await lbl.first().click();
+          else await page.locator(id).evaluate((el) => { el.click(); el.checked = true; el.dispatchEvent(new Event('change', { bubbles: true })); });
+          if (!(await page.locator(`${id}:checked`).count())) throw new Error('Personalia: could not select Juridisk kjønn');
+          result.filled.push({ label: 'Juridisk kjønn', value: g });
+        }
         else result.required_missing.push('Personalia: Juridisk kjønn (applicant.gender)');
       } else result.prefilled.push({ label: 'Juridisk kjønn', value: await page.locator('input[name="Gender"]:checked').first().getAttribute('id') });
       // "Gyldig arbeidstillatelse for Norge" — required, never prefilled (422 WorkingPermit må fylles ut)
@@ -450,7 +525,19 @@ async function main() {
           result.filled.push({ label: 'Legg til CV', value: path.basename(cvPath) });
         }
       } else {
-        const hasWork = /Arbeidserfaring/.test(cvText) && (await cv.locator('button', { hasText: 'Endre' }).count()) > 0;
+        let hasWork = /Arbeidserfaring/.test(cvText) && (await cv.locator('button', { hasText: 'Endre' }).count()) > 0;
+        if (!hasWork && cvPath && fs.existsSync(cvPath)) {
+          // Fresh account (registered by the bot): the master CV is empty and
+          // «CV *» blocks submit. Import it ONCE from the PDF via
+          // /nb-no/CV#upload → api/upload (parsed preview) → «Ja, jeg vil bruke
+          // denne» → OK (api/upload/replacewithparsed). Only when the master CV
+          // has no work experience — never over an existing one.
+          log('CV: master CV empty, importing from PDF');
+          hasWork = await importMasterCv(page, cvPath, log);
+          await page.goto(`${BASE}/nb-no/cv?advertid=${advertId}`, { waitUntil: 'networkidle', timeout: 60000 });
+          await sleep(1500);
+          if (hasWork) result.filled.push({ label: 'CV (master, importert fra PDF)', value: path.basename(cvPath) });
+        }
         if (hasWork) result.prefilled.push({ label: 'CV', value: 'structured profile CV (no upload requested)' });
         else result.required_missing.push('CV: profile has no Arbeidserfaring/Utdanning and the advert has no CV upload');
       }
