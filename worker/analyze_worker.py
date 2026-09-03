@@ -18,6 +18,12 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import httpx
+
+# Cards: minimum relevance per source before a Telegram card is sent (the user's
+# card_notify_min_score still applies as the floor for everything else).
+CARD_NOTIFY_MIN_BY_SOURCE = {
+    'LINKEDIN': int(os.getenv('CARD_NOTIFY_MIN_LINKEDIN', '70')),
+}
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
@@ -1015,7 +1021,11 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                     # Send unified job card to Telegram (analysis + søknad in one message) --
                     # gated by card_notify_min_score, except an auto-generated søknad always
                     # gets a card since it needs the approve button regardless of threshold.
-                    if auto_app is not None or result['score'] >= card_notify_min_score:
+                    # Per-source floor (owner, 2026-09-03): LinkedIn cards carry no
+                    # button and no auto-apply, and 30+ a day at score 40 drowned the
+                    # bot — so LinkedIn needs 70+, other sources keep the user setting.
+                    card_min = max(card_notify_min_score, CARD_NOTIFY_MIN_BY_SOURCE.get(source, 0))
+                    if auto_app is not None or result['score'] >= card_min:
                         await send_job_card(
                             client, chat_id, job, result, auto_app=auto_app, lang=lang,
                             track_min_score=policy['min_score']
