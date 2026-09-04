@@ -146,7 +146,13 @@ const mapJob = (job: any): Job => {
         source: job.source || 'OTHER',
         postedDate: job.created_at ? new Date(job.created_at).toLocaleDateString() : 'Unknown Date',
         scannedAt: job.created_at || new Date().toISOString(),
-        status: (job.status as JobStatus) || JobStatus.NEW,
+        // A job whose application was actually sent reads as SENT everywhere in the UI
+        // (dashboard counters/chart, row colour, map filters). The agent only flips
+        // applications.status, never jobs.status — and jobs.status must stay ANALYZED
+        // anyway, because analyze_worker re-analyzes every job that is not ANALYZED.
+        status: job.application_status === 'sent'
+            ? JobStatus.SENT
+            : ((job.status as JobStatus) || JobStatus.NEW),
         matchScore: job.relevance_score,
         description: job.description,
         ai_recommendation: job.ai_recommendation,
