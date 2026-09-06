@@ -23,8 +23,14 @@ import httpx
 # Cards: minimum relevance per source before a Telegram card is sent (the user's
 # card_notify_min_score still applies as the floor for everything else).
 CARD_NOTIFY_MIN_BY_SOURCE = {
-    'LINKEDIN': int(os.getenv('CARD_NOTIFY_MIN_LINKEDIN', '70')),
+    # 70 until 2026-09-06; with strict LinkedIn scoring (apply_linkedin_gate) the
+    # owner lowered the floor to 60 — the same value gates the LinkedIn auto-queue.
+    'LINKEDIN': int(os.getenv('CARD_NOTIFY_MIN_LINKEDIN', '60')),
 }
+
+# Tech-bot analysis report lists only jobs at or above this score (owner 2026-09-06:
+# «в технічний бот видавай лише результативні більше 60»).
+TECH_REPORT_MIN_SCORE = int(os.getenv('TECH_REPORT_MIN_SCORE', '60'))
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
@@ -1038,6 +1044,8 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
 
     # 3. Process each user's jobs
     total_analyzed = 0
+    tech_highlights: list[dict] = []   # jobs >= TECH_REPORT_MIN_SCORE, for the tech-bot report
+    source_counts: dict[str, int] = {}
     total_failed = 0
     total_cost = 0.0
 
@@ -1172,6 +1180,15 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                     if auto_app:
                         await asyncio.sleep(0.5)
 
+                    source_counts[source or '?'] = source_counts.get(source or '?', 0) + 1
+                    if result['score'] >= TECH_REPORT_MIN_SCORE:
+                        tech_highlights.append({
+                            'score': result['score'], 'source': source or '?',
+                            'company': job.get('company') or '?', 'title': job.get('title') or '?',
+                            'queued': auto_app is not None, 'no_form': has_no_form(job),
+                            'has_url': bool(job.get('external_apply_url')),
+                        })
+
                     total_analyzed += 1
                     total_cost += result['cost']
                     user_analyzed += 1
@@ -1259,12 +1276,7 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
             admin_settings = supabase.table('user_settings').select('telegram_chat_id').eq('role', 'admin').limit(1).execute()
             admin_chat = admin_settings.data[0].get('telegram_chat_id') if admin_settings.data else None
             if admin_chat:
-                summary_msg = (
-                    f"📊 <b>Аналіз завершено</b>\n\n"
-                    f"📋 Оброблено: {total_analyzed} вакансій\n"
-                    f"👥 Користувачів: {len(jobs_by_user)}\n"
-                    f"💰 Вартість: ${total_cost:.4f}"
-                )
+                summary_msg = format_tech_report(total_analyzed, source_counts, tech_highlights)
                 async with httpx.AsyncClient() as tc:
                     await tc.post(
                         f"https://api.telegram.org/bot{TELEGRAM_TECH_TOKEN}/sendMessage",
@@ -1272,6 +1284,32 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                     )
         except Exception as e:
             print(f"⚠️ Failed to send tech summary: {e}")
+
+
+def format_tech_report(total_analyzed: int, source_counts: dict, highlights: list) -> str:
+    """Tech-bot report after a run: counts per source and ONLY the jobs at or above
+    TECH_REPORT_MIN_SCORE, best first. No cost line (owner 2026-09-04: the figures are
+    notional — free tiers and a subscription). Telegram caps a message at 4096 chars,
+    so the list is cut at 25 rows."""
+    src = ", ".join(f"{k.title()} {v}" for k, v in sorted(source_counts.items(), key=lambda kv: -kv[1]))
+    msg = f"📊 <b>Аналіз завершено</b>\n📋 Оброблено: {total_analyzed}" + (f" ({src})" if src else "") + "\n"
+    if not highlights:
+        return msg + f"🔕 Жодної вакансії ≥{TECH_REPORT_MIN_SCORE}"
+    msg += f"🎯 ≥{TECH_REPORT_MIN_SCORE}: {len(highlights)}\n"
+    for h in sorted(highlights, key=lambda x: -x['score'])[:25]:
+        if h['queued']:
+            tag = "✍️ у черзі"
+        elif h['no_form']:
+            tag = "ℹ️ без форми"
+        elif h['has_url']:
+            tag = "🔗 форма є"
+        else:
+            tag = "🔎 шукаю форму"
+        title = h['title'][:48] + ('…' if len(h['title']) > 48 else '')
+        msg += f"🟢 {h['score']} · {h['source'].title()} · {h['company'][:22]} — {title} · {tag}\n"
+    if len(highlights) > 25:
+        msg += f"… ще {len(highlights) - 25}\n"
+    return msg
 
 
 async def send_evening_digest():
