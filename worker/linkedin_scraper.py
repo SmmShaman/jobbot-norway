@@ -121,7 +121,9 @@ async def fetch_job_description(job_id: str) -> dict:
         # 06.09.2026: 20 offsite / 3 onsite / 7 closed out of 30.
         page = classify_guest_page(resp.text)
         description = page['description']
-        apply_url = apply_url_from_text(description) if page['kind'] != 'onsite' else None
+        # strict: only ATS/careers-looking links go straight to the DB; other links
+        # in the text are verified by ats_resolver.py before they count as a form
+        apply_url = apply_url_from_text(description, strict=True) if page['kind'] != 'onsite' else None
 
         return {
             'description': description[:5000] if description else '',

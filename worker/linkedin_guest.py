@@ -110,21 +110,40 @@ def form_type_for(kind: str, external_url: Optional[str]) -> Optional[str]:
 _URL_RE = re.compile(r'https?://[^\s<>"\')\]]+', re.I)
 
 
-def apply_url_from_text(text: str) -> Optional[str]:
+_ATS_OR_CAREER = re.compile(
+    r'teamtailor|workday|recman|easycruit|webcruiter|varbi|jobylon|jobbnorge|reachmee|'
+    r'hr-manager|talentech|smartrecruiters|greenhouse|lever\.co|ashbyhq|workable|'
+    r'successfactors|csod|personio|bamboohr|mojob|applytojob|'
+    r'karriere|karri[aä]r|career|jobb|/job|stilling|vacanc|apply|s[øo]knad|recruit',
+    re.I,
+)
+
+
+def apply_url_from_text(text: str, strict: bool = False) -> Optional[str]:
     """First URL in the posting text that can plausibly be an application form.
 
     Employers who post on LinkedIn without paying for offsite apply often write
     "søk her: https://…" in the description. Aggregators, social links and
-    LinkedIn's own domains are ignored; the caller still verifies the page.
+    LinkedIn's own domains are ignored.
+
+    strict=True returns only URLs that look like an ATS or a careers path — the
+    scraper writes those straight into jobs.external_apply_url. Anything else
+    (an employer's generic deep link, e.g. a security-clearance explainer at
+    nsm.no found in a police posting on 06.09.2026) is left to the resolver,
+    which verifies a candidate against the posting text before accepting it.
     """
     for raw in _URL_RE.findall(text or ''):
         url = raw.rstrip('.,;:!?)')
-        host = urllib.parse.urlparse(url).netloc.lower()
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.netloc.lower()
         if not host or any(b in host for b in NOT_A_FORM):
             continue
-        path = urllib.parse.urlparse(url).path.lower()
+        path = parsed.path.lower()
+        looks_like_form = bool(_ATS_OR_CAREER.search(host + path))
         # a bare homepage is not a form; deeper paths or ATS hosts are worth a look
-        if path in ('', '/') and not re.search(r'karriere|career|jobb|job|stilling', host):
+        if path in ('', '/') and not looks_like_form:
+            continue
+        if strict and not looks_like_form:
             continue
         return url
     return None
