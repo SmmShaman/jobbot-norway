@@ -1369,19 +1369,31 @@ async def send_evening_digest():
                 print(f"⚠️ Evening digest send failed for user {uid[:8]}: {e}")
 
 
-async def reanalyze_career_recent(days: int = 3, user_id: Optional[str] = None):
+async def reanalyze_career_recent(
+    days: int = 3, user_id: Optional[str] = None,
+    source: Optional[str] = None, min_old_score: int = 0, pause: float = 5.0,
+):
     """Re-run already-ANALYZED career-track jobs from the last N days through analyze_job with
     the new seniority/language honesty gates (2026-07-19), so historical scores reflect the
     current calibration. Updates jobs.relevance_score/ai_recommendation/analysis_metadata in
-    place — does not resend Telegram cards or touch application status."""
+    place — does not resend Telegram cards or touch application status.
+
+    2026-09-06: `source` / `min_old_score` filters added for the LinkedIn backlog re-score
+    after strict LinkedIn scoring (apply_linkedin_gate); the previous score is kept in
+    analysis_metadata.score_before_rescore. Newest jobs first, so the ones that still
+    matter are corrected first. A tech-bot summary closes the run."""
     validate_config()
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     since = (datetime.utcnow() - timedelta(days=days)).isoformat()
 
-    query = supabase.table('jobs').select('*').eq('track', 'career').eq('status', 'ANALYZED').gte('analyzed_at', since)
+    query = supabase.table('jobs').select('*').eq('track', 'career').eq('status', 'ANALYZED').gte('created_at', since)
     if user_id:
         query = query.eq('user_id', user_id)
-    jobs = query.execute().data or []
+    if source:
+        query = query.eq('source', source.upper())
+    if min_old_score:
+        query = query.gte('relevance_score', min_old_score)
+    jobs = query.order('created_at', desc=True).limit(1000).execute().data or []
 
     if not jobs:
         print("✅ No career jobs to re-analyze")
@@ -1391,7 +1403,9 @@ async def reanalyze_career_recent(days: int = 3, user_id: Optional[str] = None):
     for job in jobs:
         jobs_by_user.setdefault(job.get('user_id'), []).append(job)
 
-    print(f"🔁 Re-analyzing {len(jobs)} career jobs from last {days} days for {len(jobs_by_user)} users")
+    print(f"🔁 Re-analyzing {len(jobs)} career jobs from last {days} days for {len(jobs_by_user)} users"
+          + (f" (source {source}, old score ≥{min_old_score})" if source or min_old_score else ""))
+    tally = {'n': 0, 'old60': 0, 'new60': 0, 'old70': 0, 'new70': 0, 'down': 0, 'up': 0}
 
     async with httpx.AsyncClient() as client:
         for uid, user_jobs in jobs_by_user.items():
@@ -1416,6 +1430,7 @@ async def reanalyze_career_recent(days: int = 3, user_id: Optional[str] = None):
                 result = await analyze_job(client, job, profile, lang, custom_prompt, track='career')
                 if result['success']:
                     old_score = job.get('relevance_score')
+                    old_meta = job.get('analysis_metadata') or {}
                     supabase.table('jobs').update({
                         'relevance_score': result['score'],
                         'ai_recommendation': result['analysis'],
@@ -1425,18 +1440,41 @@ async def reanalyze_career_recent(days: int = 3, user_id: Optional[str] = None):
                             'radar': result['radar'],
                             'requirements': result.get('requirements', ''),
                             'offers': result.get('offers', ''),
-                            'position_uk': result.get('position_uk', '')
+                            'position_uk': result.get('position_uk', ''),
+                            'linkedin_gate': result.get('linkedin_gate') or None,
+                            'score_before_rescore': old_meta.get('score_before_rescore', old_score),
+                            'rescored_at': datetime.utcnow().isoformat(),
                         },
                         'cost_usd': (job.get('cost_usd') or 0) + result['cost'],
                     }).eq('id', job['id']).execute()
                     delta = result['score'] - (old_score or 0)
                     arrow = "↓" if delta < 0 else "↑" if delta > 0 else "="
-                    print(f"   {arrow} {job['title'][:40]}: {old_score}% -> {result['score']}%")
+                    tally['n'] += 1
+                    tally['old60'] += (old_score or 0) >= 60
+                    tally['new60'] += result['score'] >= 60
+                    tally['old70'] += (old_score or 0) >= 70
+                    tally['new70'] += result['score'] >= 70
+                    tally['down'] += delta < 0
+                    tally['up'] += delta > 0
+                    print(f"   {arrow} {job['title'][:40]}: {old_score}% -> {result['score']}%", flush=True)
                 else:
-                    print(f"   ❌ {job['title'][:40]} | Error: {result['error']}")
-                await asyncio.sleep(5.0)
+                    print(f"   ❌ {job['title'][:40]} | Error: {result['error']}", flush=True)
+                await asyncio.sleep(pause)
 
-    print("✅ Re-analysis complete")
+    print(f"✅ Re-analysis complete: {tally}")
+    if TELEGRAM_TECH_TOKEN and tally['n']:
+        try:
+            admin = supabase.table('user_settings').select('telegram_chat_id').eq('role', 'admin').limit(1).execute()
+            chat = admin.data[0].get('telegram_chat_id') if admin.data else None
+            if chat:
+                msg = (f"🔁 <b>Переоцінка {source or 'career'} за {days} дн.</b>\n"
+                       f"📋 Переоцінено: {tally['n']} (↓{tally['down']} ↑{tally['up']})\n"
+                       f"🎯 ≥60: {tally['old60']} → {tally['new60']}\n"
+                       f"🔥 ≥70: {tally['old70']} → {tally['new70']}")
+                httpx.post(f"https://api.telegram.org/bot{TELEGRAM_TECH_TOKEN}/sendMessage",
+                           json={'chat_id': str(chat), 'text': msg, 'parse_mode': 'HTML'}, timeout=20)
+        except Exception as e:
+            print(f"⚠️ tech summary failed: {e}")
 
 
 if __name__ == '__main__':
@@ -1446,11 +1484,17 @@ if __name__ == '__main__':
     parser.add_argument('--users', type=str, help='Comma-separated user IDs to process')
     parser.add_argument('--digest', action='store_true', help='Send evening digest broken down by track instead of analyzing')
     parser.add_argument('--reanalyze-career-days', type=int, help='Re-analyze already-ANALYZED career jobs from the last N days with current calibration')
+    parser.add_argument('--source', type=str, help='With --reanalyze-career-days: only this source (e.g. LINKEDIN)')
+    parser.add_argument('--min-old-score', type=int, default=0, help='With --reanalyze-career-days: only jobs whose current score is at least this')
+    parser.add_argument('--pause', type=float, default=5.0, help='With --reanalyze-career-days: seconds between jobs')
 
     args = parser.parse_args()
 
     if args.reanalyze_career_days is not None:
-        asyncio.run(reanalyze_career_recent(days=args.reanalyze_career_days, user_id=args.user))
+        asyncio.run(reanalyze_career_recent(
+            days=args.reanalyze_career_days, user_id=args.user,
+            source=args.source, min_old_score=args.min_old_score, pause=args.pause,
+        ))
     elif args.digest:
         asyncio.run(send_evening_digest())
     elif args.users:
