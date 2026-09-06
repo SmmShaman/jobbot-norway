@@ -10,6 +10,7 @@ Analyze Worker - аналізує вакансії через Groq API (llama-3.
 """
 
 import os
+import re
 import sys
 import json
 import asyncio
@@ -411,6 +412,124 @@ def apply_language_gate(score: int, track: str, title: str, description: str, an
     return score
 
 
+# LinkedIn strictness (owner's decision 2026-09-06): LinkedIn postings are open-market
+# professional roles with many applicants, and the single prompt above scored them
+# like NAV jobs — 12.6 % of a month's LinkedIn postings landed at 70+, including a
+# "Juniorutvikler" that needs a CS degree and a "Project Manager" that needs a
+# master's plus consulting years. The employer's literal text is the bar here:
+# language, years of PAID experience, formal education. The model extracts those
+# facts as structured fields; the caps below are applied in code, deterministically,
+# so a generous model cannot talk its way past them. Only for source == LINKEDIN.
+LINKEDIN_STRICT_PROMPT = """
+LINKEDIN STRICTNESS (this posting comes from LinkedIn — an open professional market with
+many applicants; the bar is the employer's LITERAL text, not transferable potential):
+1. LANGUAGE. Report "language_required" from the posting's language and wording:
+   - "norwegian_fluent": flytende norsk / morsmål / native / meget god norsk / norsk som
+     arbeidsspråk, or Norwegian is needed for customer-, client-, patient- or public-facing
+     duties, or the role is in the public sector (kommune, stat, etat, direktorat).
+   - "norwegian_working": the posting is written in Norwegian, or asks for god norsk /
+     norsk skriftlig og muntlig / behersker norsk, without the signals above.
+   - "english": the posting is in English and does not ask for Norwegian.
+   - "unspecified": nothing can be inferred.
+   The candidate's documented Norwegian is B1. "norwegian_fluent" is NOT met and
+   "norwegian_working" is only partially met — count them that way in req_met/req_partial.
+2. EXPERIENCE. Report "years_required": the minimum years of professional experience the
+   posting states for the core craft (0 when none is stated), and "years_evidenced": years
+   of PAID employment in that same craft in the profile. Self-taught skills, personal
+   projects, side projects and unpaid work count as 0 here.
+3. EDUCATION. Report "education_required": "none" | "vocational" | "bachelor" | "master" |
+   "phd" for the field the posting names (e.g. informatikk, ingeniør, økonomi), and
+   "education_met": true only if the profile's degree is in that field, or the posting
+   explicitly accepts equivalent experience AND years_evidenced >= years_required.
+4. MUST-HAVES. Every item under must have / required / krav / du må / vi krever that the
+   profile does not evidence with paid employment is MISSING, never partial. Report the
+   number in "must_have_missing".
+Never award req_met for a skill the candidate shows only in a personal project when the
+posting asks for professional experience with it.
+Add these fields to the JSON: "language_required", "years_required", "years_evidenced",
+"education_required", "education_met", "must_have_missing".
+"""
+
+LINKEDIN_CAPS = {
+    'norwegian_fluent': int(os.getenv('LI_CAP_NO_FLUENT', '50')),
+    'norwegian_working': int(os.getenv('LI_CAP_NO_WORKING', '65')),
+    'years_gap': int(os.getenv('LI_CAP_YEARS_GAP', '60')),       # years_required >= 3, not evidenced
+    'years_none': int(os.getenv('LI_CAP_YEARS_NONE', '45')),     # years_required >= 5, zero paid years
+    'degree_higher': int(os.getenv('LI_CAP_DEGREE_HIGHER', '55')),  # master/phd unmet
+    'degree_bachelor': int(os.getenv('LI_CAP_DEGREE_BACHELOR', '60')),
+    'must_have_1': int(os.getenv('LI_CAP_MUST_HAVE_1', '65')),
+    'must_have_2': int(os.getenv('LI_CAP_MUST_HAVE_2', '50')),
+}
+# Text backstops for the language field: wording that means Norwegian is needed even
+# if the model reported "english"/"unspecified".
+LI_NO_FLUENT_WORDS = ['flytende norsk', 'morsmål', 'native norwegian', 'meget god norsk',
+                      'norsk som arbeidsspråk', 'perfekt norsk', 'fluent norwegian', 'fluent in norwegian']
+LI_NO_WORKING_WORDS = ['god norsk', 'gode norskkunnskaper', 'norsk skriftlig', 'norsk muntlig',
+                       'behersker norsk', 'snakker norsk', 'skriver norsk', 'norsk og engelsk',
+                       'norwegian language', 'norwegian skills', 'proficiency in norwegian',
+                       'norsk språk', 'norskkunnskaper']
+LI_NO_STOPWORDS = {'og', 'med', 'for', 'til', 'som', 'det', 'har', 'skal', 'vil', 'ikke',
+                   'deg', 'vår', 'våre', 'hos', 'kan', 'være', 'er', 'på', 'av', 'en', 'et'}
+
+
+def is_norwegian_text(text: str) -> bool:
+    """Cheap language guess: share of Norwegian function words among the first 300 tokens."""
+    toks = re.findall(r"[a-zæøåA-ZÆØÅ]+", (text or '')[:2500].lower())[:300]
+    if len(toks) < 40:
+        return False
+    return sum(t in LI_NO_STOPWORDS for t in toks) / len(toks) >= 0.08
+
+
+def apply_linkedin_gate(score: int, source: str, content: dict, title: str, description: str) -> tuple[int, dict]:
+    """Deterministic caps for LinkedIn postings from the model's structured fields plus
+    keyword backstops. Returns (score, gate_info) — gate_info is stored in analysis_metadata."""
+    if (source or '').upper() != 'LINKEDIN' or os.getenv('LINKEDIN_STRICT', '1') != '1':
+        return score, {}
+    text = f"{title} {description or ''}".lower()
+    lang = str(content.get('language_required') or 'unspecified').lower()
+    if any(w in text for w in LI_NO_FLUENT_WORDS):
+        lang = 'norwegian_fluent'
+    elif lang in ('english', 'unspecified') and (any(w in text for w in LI_NO_WORKING_WORDS) or is_norwegian_text(description)):
+        lang = 'norwegian_working'
+
+    def num(k):
+        try:
+            return max(0, int(float(content.get(k) or 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    years_req, years_ev = num('years_required'), num('years_evidenced')
+    edu_req = str(content.get('education_required') or 'none').lower()
+    edu_met = bool(content.get('education_met'))
+    missing = num('must_have_missing')
+
+    caps: list[tuple[str, int]] = []
+    if lang == 'norwegian_fluent':
+        caps.append(('norwegian_fluent', LINKEDIN_CAPS['norwegian_fluent']))
+    elif lang == 'norwegian_working':
+        caps.append(('norwegian_working', LINKEDIN_CAPS['norwegian_working']))
+    if years_req >= 5 and years_ev == 0:
+        caps.append((f'years {years_ev}/{years_req}', LINKEDIN_CAPS['years_none']))
+    elif years_req >= 3 and years_ev < years_req:
+        caps.append((f'years {years_ev}/{years_req}', LINKEDIN_CAPS['years_gap']))
+    if edu_req in ('master', 'phd') and not edu_met:
+        caps.append((f'{edu_req} unmet', LINKEDIN_CAPS['degree_higher']))
+    elif edu_req == 'bachelor' and not edu_met:
+        caps.append(('bachelor unmet', LINKEDIN_CAPS['degree_bachelor']))
+    if missing >= 2:
+        caps.append((f'must-haves missing {missing}', LINKEDIN_CAPS['must_have_2']))
+    elif missing == 1:
+        caps.append(('must-have missing 1', LINKEDIN_CAPS['must_have_1']))
+
+    capped = min([score] + [c for _, c in caps])
+    info = {
+        'language_required': lang, 'years_required': years_req, 'years_evidenced': years_ev,
+        'education_required': edu_req, 'education_met': edu_met, 'must_have_missing': missing,
+        'caps': [f'{why}→{cap}' for why, cap in caps], 'score_before_gate': score,
+    }
+    return capped, info
+
+
 # Search tracks: nav_quota (NAV activity-report jobs, "can I do this") vs
 # career (leadership/IT jobs, "fit with leadership experience + company potential").
 # LinkedIn jobs are always career. NAV/FINN jobs are career only if a leadership or
@@ -482,7 +601,8 @@ async def analyze_job(
     profile: str,
     lang: str,
     custom_prompt: Optional[str] = None,
-    track: str = 'nav_quota'
+    track: str = 'nav_quota',
+    source: Optional[str] = None,
 ) -> dict:
     """Analyze a single job using Groq API"""
 
@@ -493,6 +613,9 @@ async def analyze_job(
             f"{analysis_prompt}\n{CAREER_SENIORITY_GATE_PROMPT}\n"
             f"{CAREER_LANGUAGE_GATE_PROMPT}\n{CAREER_CONS_ORDERING_PROMPT}"
         )
+    source = (source or job.get('source') or '').upper()
+    if source == 'LINKEDIN' and os.getenv('LINKEDIN_STRICT', '1') == '1':
+        analysis_prompt = f"{analysis_prompt}\n{LINKEDIN_STRICT_PROMPT}"
 
     user_message = f"""{analysis_prompt}
 
@@ -604,10 +727,14 @@ Location: {job.get('location', 'Unknown')}
                 gated_score = apply_language_gate(
                     gated_score, track, job.get('title', ''), job.get('description', ''), content.get('analysis', '')
                 )
+                gated_score, li_gate = apply_linkedin_gate(
+                    gated_score, source, content, job.get('title', ''), job.get('description', '')
+                )
 
                 return {
                     'success': True,
                     'score': gated_score,
+                    'linkedin_gate': li_gate,
                     'position_uk': content.get('position_uk', ''),
                     'analysis': content.get('analysis', ''),
                     'tasks': content.get('tasks', ''),
@@ -979,7 +1106,8 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                             'radar': result['radar'],
                             'requirements': result.get('requirements', ''),
                             'offers': result.get('offers', ''),
-                            'position_uk': result.get('position_uk', '')
+                            'position_uk': result.get('position_uk', ''),
+                            'linkedin_gate': result.get('linkedin_gate') or None,
                         },
                         'status': 'ANALYZED',
                         'analyzed_at': datetime.utcnow().isoformat(),
