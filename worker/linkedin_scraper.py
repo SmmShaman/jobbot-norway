@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from linkedin_guest import apply_url_from_text, classify_guest_page, form_type_for
 
 load_dotenv()
 
@@ -112,28 +113,22 @@ async def fetch_job_description(job_id: str) -> dict:
         if resp.status_code != 200:
             return {}
 
-        soup = BeautifulSoup(resp.text, 'html.parser')
-
-        # Extract description
-        desc_el = soup.find('div', class_='show-more-less-html__markup') or \
-                  soup.find('div', class_='description__text')
-        description = desc_el.get_text(strip=True) if desc_el else ''
-
-        # Extract apply URL (external link if exists)
-        apply_el = soup.find('a', class_='apply-button') or \
-                   soup.find('a', attrs={'href': re.compile(r'applyUrl|externalApply')})
-        apply_url = apply_el.get('href', '') if apply_el else ''
-
-        # Clean apply URL
-        if apply_url and 'linkedin.com' not in apply_url:
-            apply_url = apply_url.split('?')[0]
-        else:
-            apply_url = ''
+        # Until 2026-09-06 this looked for an <a class="apply-button" href=…>, which
+        # LinkedIn stopped rendering for guests long ago — so every posting fell into
+        # the else-branch and 643/644 rows were labelled Easy Apply. The guest page
+        # still says WHICH kind of apply button it has (onsite = Easy Apply only,
+        # offsite = employer form); only the offsite URL is withheld. Measured
+        # 06.09.2026: 20 offsite / 3 onsite / 7 closed out of 30.
+        page = classify_guest_page(resp.text)
+        description = page['description']
+        apply_url = apply_url_from_text(description) if page['kind'] != 'onsite' else None
 
         return {
             'description': description[:5000] if description else '',
-            'external_apply_url': apply_url,
-            'application_form_type': 'external_form' if apply_url else 'linkedin_easy_apply'
+            'apply_kind': page['kind'],
+            'company_url': page['company_url'],
+            'external_apply_url': apply_url or '',
+            'application_form_type': form_type_for(page['kind'], apply_url),
         }
 
 
@@ -230,43 +225,47 @@ async def scan_linkedin_for_user(user_id: str) -> dict:
         print(f"   New (after dedup): {len(new_jobs)}")
 
         if new_jobs:
-            # Insert jobs (without posted_date and linkedin_job_id)
-            to_insert = []
+            # Details FIRST, insert second (2026-09-06): the guest page tells us
+            # whether the posting still accepts applications. A closed posting is
+            # not inserted at all — scoring it would only produce a card for a job
+            # nobody can apply to (7 of 30 recent postings were already closed).
+            rows = []
             for j in new_jobs:
-                to_insert.append({
+                details = {}
+                try:
+                    details = await fetch_job_description(j['linkedin_job_id'])
+                except Exception as e:
+                    print(f"   ⚠️ Detail fetch failed: {e}")
+                await asyncio.sleep(2)  # Rate limit
+                if details.get('apply_kind') == 'closed':
+                    print(f"   ⏭ closed, not inserted: {j['title'][:40]}")
+                    continue
+                row = {
                     'job_url': j['job_url'],
                     'title': j['title'],
                     'company': j['company'],
                     'location': j['location'],
                     'source': 'LINKEDIN',
                     'status': 'NEW',
-                    'user_id': user_id
-                })
-            # upsert instead of insert: a duplicate on jobs_user_id_url_key must not
-            # abort the whole batch and lose the other, genuinely new jobs in it.
-            supabase.table('jobs').upsert(
-                to_insert, on_conflict='user_id,job_url', ignore_duplicates=True
-            ).execute()
-            total_new += len(new_jobs)
+                    'user_id': user_id,
+                }
+                if details.get('description'):
+                    row['description'] = details['description']
+                if details.get('external_apply_url'):
+                    row['external_apply_url'] = details['external_apply_url']
+                if details.get('application_form_type'):
+                    row['application_form_type'] = details['application_form_type']
+                rows.append(row)
+                kind = details.get('apply_kind', '?')
+                print(f"   + {kind:8} {j['title'][:40]}" + (f" -> {row['external_apply_url'][:60]}" if row.get('external_apply_url') else ''))
 
-            # Fetch descriptions for new jobs
-            for j in new_jobs:
-                try:
-                    details = await fetch_job_description(j['linkedin_job_id'])
-                    if details:
-                        updates = {}
-                        if details.get('description'):
-                            updates['description'] = details['description']
-                        if details.get('external_apply_url'):
-                            updates['external_apply_url'] = details['external_apply_url']
-                        if details.get('application_form_type'):
-                            updates['application_form_type'] = details['application_form_type']
-                        if updates:
-                            supabase.table('jobs').update(updates) \
-                                .eq('job_url', j['job_url']).eq('user_id', user_id).execute()
-                    await asyncio.sleep(2)  # Rate limit
-                except Exception as e:
-                    print(f"   ⚠️ Detail fetch failed: {e}")
+            if rows:
+                # upsert instead of insert: a duplicate on jobs_user_id_url_key must not
+                # abort the whole batch and lose the other, genuinely new jobs in it.
+                supabase.table('jobs').upsert(
+                    rows, on_conflict='user_id,job_url', ignore_duplicates=True
+                ).execute()
+            total_new += len(rows)
 
         # Telegram notification per term — scan summary is service info, tech bot only
         if chat_id:

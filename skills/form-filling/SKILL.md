@@ -304,7 +304,19 @@ both LinkedIn). For the agent pipeline:
    "sign-in wall visible" as "therefore Easy Apply only," that was an actual
    mistake made and corrected this same day (see the Walley/Norion Bank case
    below). Anonymous recon alone cannot distinguish the two job types.
-2. **ATS-resolver cascade — the primary path now** (validated 2026-07-19,
+2. **ATS-resolver is a script, not your job (since 2026-07-29; channels
+   extended 2026-09-06).** `worker/ats_resolver.py` runs every 15 min on the
+   VPS and writes `jobs.external_apply_url` before a row reaches you. Its
+   order: URL in the posting text → LinkedIn guest page (Easy-Apply-only and
+   closed postings leave the queue there with a note) → employer website from
+   the LinkedIn company page → SearxNG (`SEARX_URL`). Measured 06.09.2026: the
+   guest page's `public_jobs_apply-link-offsite` / `-onsite` marker is
+   reliable (20 offsite / 3 onsite / 7 closed of 30), but the offsite URL
+   itself is behind the sign-in modal and is NOT in the guest HTML. So if a
+   LinkedIn row reaches you without a URL, do not search yourself — set
+   `manual_review` with the resolver's note. The description below is the
+   historical agent-side procedure, kept for the acceptance rules.
+   **ATS-resolver cascade (historical)** (validated 2026-07-19,
    87% direct-hit rate across 10 sampled LinkedIn jobs against real ATS
    pages). Run it for **the one application this wake is about** — resolving a
    batch of LinkedIn rows in parallel sub-agents is exactly the 16.3M mistake

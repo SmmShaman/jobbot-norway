@@ -101,11 +101,19 @@ AURA_COLORS = {
 # The number also has to be read against the 2026-07-29 rescoring: the scorer used
 # to give 85 to three quarters of everything, so 85 meant nothing. It now spreads,
 # and 85 means "every significant requirement is met".
-# Owner's decision (2026-08-10): LinkedIn postings carry no application form and
-# there is no search channel to find one, so LinkedIn NEVER auto-queues and its
-# cards carry no confirm button — the card is informational, apply via the link.
-# NAV/FINN auto-queue again at the user's auto_soknad_min_score (POLICY v9).
-AUTO_SOKNAD_EXCLUDED_SOURCES = {'LINKEDIN'}
+# Owner's decision (2026-08-10): LinkedIn never auto-queued, because no form URL
+# and no channel to find one. Superseded 2026-09-06: the scraper now reads from
+# the guest page whether an employer form exists (offsite) and ats_resolver.py
+# finds its URL through keyless channels (posting text, employer website,
+# SearxNG). So exclusion is decided per FORM, not per source: a posting that is
+# Easy-Apply-only or closed has nothing to fill and stays an informational card;
+# an offsite LinkedIn posting queues like NAV/FINN, at the LinkedIn floor (70).
+NO_FORM_TYPES = {'linkedin_easy_apply', 'closed'}
+AUTO_SOKNAD_MIN_BY_SOURCE = {'LINKEDIN': CARD_NOTIFY_MIN_BY_SOURCE['LINKEDIN']}
+
+
+def has_no_form(job: dict) -> bool:
+    return (job.get('application_form_type') or '') in NO_FORM_TYPES
 
 # Where the agent's platform knowledge lives on the VPS. Used only to decide
 # whether an auto-queued card needs the "allow recon" button; when the dir is
@@ -732,9 +740,9 @@ async def send_job_card(
                      "callback_data": f"allow_recon_{auto_app['id']}"}
                 ]]
             }
-    elif score >= track_min_score and card_source not in AUTO_SOKNAD_EXCLUDED_SOURCES:
+    elif score >= track_min_score and not has_no_form(job):
         # Not queued yet but relevant (per this job's track threshold) → single confirm button.
-        # LinkedIn cards get no button at all: there is no form to fill (owner 2026-08-10).
+        # Easy-Apply-only / closed postings get no button: there is no form to fill.
         payload['reply_markup'] = {
             "inline_keyboard": [[
                 {"text": "✅ Підтвердити", "callback_data": f"confirm_job_{job['id']}"}
@@ -998,11 +1006,11 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                     # that is where the cost and the irreversible step live.
                     auto_app = None
                     source = (job.get('source') or '').upper()
-                    auto_min = min_score
+                    auto_min = max(min_score, AUTO_SOKNAD_MIN_BY_SOURCE.get(source, 0))
                     if company_blocked(job.get('company')):
                         print(f"   🚫 Blocklisted company, no application ever: {job.get('company')} — {job['title'][:30]}")
-                    elif source in AUTO_SOKNAD_EXCLUDED_SOURCES:
-                        pass  # informational card only — no queue, no button
+                    elif has_no_form(job):
+                        print(f"   ℹ️ no form ({job.get('application_form_type')}): {job['title'][:30]} — card only")
                     elif auto_soknad and result['score'] < auto_min and result['score'] >= min_score:
                         print(
                             f"   ⏭ {source or '?'} needs ≥{auto_min}: {job['title'][:30]} "
