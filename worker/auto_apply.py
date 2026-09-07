@@ -83,6 +83,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- WORKER IDENTITY (for multi-worker locking) ---
 WORKER_ID = os.getenv("WORKER_ID", f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}")
+WORKER_LINKEDIN_SCAN = os.getenv('WORKER_LINKEDIN_SCAN', '0') == '1'  # see the daily LinkedIn scan block
 WORKER_LOCATION = os.getenv("WORKER_LOCATION", "unknown")
 print(f"🆔 Worker ID: {WORKER_ID} ({WORKER_LOCATION})")
 
@@ -6021,7 +6022,12 @@ async def main():
 
         # LinkedIn scanning (once per day, from local machine — Edge Functions blocked by LinkedIn)
         # 8640 cycles * 10s = 24 hours
-        if poll_cycle % 8640 == 360:  # offset to not conflict with other tasks
+        # OFF by default since 2026-09-07: on the VPS the daily chain (daily_chain.sh)
+        # owns the scan and runs a fresh interpreter. This long-lived process kept the
+        # pre-06.09 linkedin_scraper in memory after a deploy and labelled every
+        # posting "easy apply" for two days, while the chain's own scan was skipped
+        # as "scanned 4h ago". Set WORKER_LINKEDIN_SCAN=1 only where no chain exists.
+        if WORKER_LINKEDIN_SCAN and poll_cycle % 8640 == 360:  # offset to not conflict with other tasks
             try:
                 from linkedin_scraper import scan_all_users
                 await log("🟣 Running LinkedIn scan from local worker...")
