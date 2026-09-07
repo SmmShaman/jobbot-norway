@@ -49,6 +49,21 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 OWNER_USER_ID = os.environ.get("JOBBOT_OWNER_USER_ID", "f92ee73e-786a-4990-b434-23f67203eb53")
 RECLASSIFIABLE = ("linkedin_easy_apply", "linkedin_external")
+QUEUEABLE = ("linkedin_external", "external_form")  # offsite: form exists (URL known or not)
+
+
+def db(call, tries: int = 4):
+    """Run a supabase-py query builder with retries. db-jobbot sits behind Cloudflare,
+    which resets TLS sessions now and then (WriteError/ConnectError) — the 06.09
+    backlog re-score and the first run of this script both died on that."""
+    for attempt in range(1, tries + 1):
+        try:
+            return call().execute()
+        except Exception as e:  # httpx.WriteError / ConnectError / ReadTimeout
+            if attempt == tries:
+                raise
+            print(f"   ⏳ db error ({type(e).__name__}), retry {attempt}/{tries - 1} in {5 * attempt}s")
+            time.sleep(5 * attempt)
 
 
 def guest_kind(client: httpx.Client, job_url: str) -> dict:
@@ -75,7 +90,7 @@ def select_jobs(sb, since: str, high_since: str | None, min_score: int, limit: i
          .eq("user_id", OWNER_USER_ID).eq("source", "LINKEDIN")
          .in_("application_form_type", list(RECLASSIFIABLE))
          .gte("created_at", since).order("created_at", desc=True).limit(limit))
-    rows = q.execute().data or []
+    rows = db(lambda: q).data or []
     if high_since:
         hq = (sb.table("jobs").select(cols)
               .eq("user_id", OWNER_USER_ID).eq("source", "LINKEDIN")
@@ -83,7 +98,7 @@ def select_jobs(sb, since: str, high_since: str | None, min_score: int, limit: i
               .gte("relevance_score", min_score)
               .gte("created_at", high_since).lt("created_at", since)
               .order("relevance_score", desc=True).limit(limit))
-        rows += hq.execute().data or []
+        rows += db(lambda: hq).data or []
     seen, out = set(), []
     for r in rows:
         if r["id"] not in seen:
@@ -92,8 +107,20 @@ def select_jobs(sb, since: str, high_since: str | None, min_score: int, limit: i
     return out
 
 
+def select_queueable(sb, since: str, min_score: int, limit: int) -> list[dict]:
+    cols = ("id,title,company,job_url,source,application_form_type,external_apply_url,"
+            "relevance_score,ai_recommendation,tasks_summary,analysis_metadata,track,"
+            "location,deadline,created_at")
+    q = (sb.table("jobs").select(cols)
+         .eq("user_id", OWNER_USER_ID).eq("source", "LINKEDIN")
+         .in_("application_form_type", list(QUEUEABLE))
+         .gte("relevance_score", min_score).gte("created_at", since)
+         .order("relevance_score", desc=True).limit(limit))
+    return db(lambda: q).data or []
+
+
 def has_application(sb, job_id: str) -> bool:
-    res = sb.table("applications").select("id").eq("job_id", job_id).eq("user_id", OWNER_USER_ID).limit(1).execute()
+    res = db(lambda: sb.table("applications").select("id").eq("job_id", job_id).eq("user_id", OWNER_USER_ID).limit(1))
     return bool(res.data)
 
 
@@ -128,16 +155,21 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=120)
     ap.add_argument("--pause", type=float, default=2.5)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--queue-only", action="store_true",
+                    help="no LinkedIn probes: queue stored offsite rows (linkedin_external/external_form) >= --min-score")
     ap.add_argument("--allow-old-scores", action="store_true",
                     help="queue rows scored before the strict LinkedIn prompt (no analysis_metadata.linkedin_gate)")
     args = ap.parse_args()
 
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-    us = (sb.table("user_settings").select("telegram_chat_id,ui_language")
-          .eq("user_id", OWNER_USER_ID).limit(1).execute().data or [{}])[0]
+    us = (db(lambda: sb.table("user_settings").select("telegram_chat_id,ui_language")
+             .eq("user_id", OWNER_USER_ID).limit(1)).data or [{}])[0]
     chat_id, lang = us.get("telegram_chat_id"), us.get("ui_language") or "uk"
 
-    jobs = select_jobs(sb, args.since, args.high_since, args.min_score, args.limit)
+    if args.queue_only:
+        jobs = select_queueable(sb, args.high_since or args.since, args.min_score, args.limit)
+    else:
+        jobs = select_jobs(sb, args.since, args.high_since, args.min_score, args.limit)
     print(f"{len(jobs)} LinkedIn rows to re-check (since {args.since}"
           f"{', >=' + str(args.min_score) + ' since ' + args.high_since if args.high_since else ''})"
           f"{' [DRY RUN]' if args.dry_run else ''}")
@@ -146,7 +178,10 @@ def main() -> int:
     queued, candidates = [], []
     with httpx.Client() as client:
         for j in jobs:
-            page = guest_kind(client, j["job_url"])
+            if args.queue_only:
+                page = {"kind": "offsite", "description": ""}
+            else:
+                page = guest_kind(client, j["job_url"])
             kind = page["kind"]
             old = j["application_form_type"]
             score = j.get("relevance_score") or 0
@@ -165,7 +200,7 @@ def main() -> int:
             if text_url and not j.get("external_apply_url"):
                 patch["external_apply_url"] = text_url
             if patch and not args.dry_run:
-                sb.table("jobs").update(patch).eq("id", j["id"]).execute()
+                db(lambda: sb.table("jobs").update(patch).eq("id", j["id"]))
                 j.update(patch)
             if kind == "offsite" and score >= args.min_score and not aw.company_blocked(j.get("company")):
                 strict = bool((j.get("analysis_metadata") or {}).get("linkedin_gate"))
@@ -178,7 +213,8 @@ def main() -> int:
                     print(f"      ⏳ old score, not queued: {j.get('company')} — {j['title'][:40]}")
                 else:
                     candidates.append(j)
-            time.sleep(args.pause)
+            if not args.queue_only:
+                time.sleep(args.pause)
 
     for j in candidates:
         print(f"✍️ queue: {j.get('company')} — {j['title'][:50]} ({j.get('relevance_score')})")
@@ -189,7 +225,8 @@ def main() -> int:
             queued.append(j)
         time.sleep(1)
 
-    lines = [f"🔁 LinkedIn re-check: {len(jobs)} рядків" + (" (dry run)" if args.dry_run else "")]
+    mode = "queue-only" if args.queue_only else "re-check"
+    lines = [f"🔁 LinkedIn {mode}: {len(jobs)} рядків" + (" (dry run)" if args.dry_run else "")]
     lines += [f"  {k}: {v}" for k, v in tally.most_common()]
     lines.append(f"✍️ у чергу: {len(queued)} з {len(candidates)} кандидатів (≥{args.min_score}, offsite)")
     for j in queued:
