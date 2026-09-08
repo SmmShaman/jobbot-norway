@@ -63,6 +63,11 @@ log "ROTATED ${sid} (tail ${TAIL_MB} MB > ${LIMIT_MB} MB) -> projects/${sid}-ROT
 # Tell the tech bot so the two empty wakes are not read as a failure.
 # The unit loads worker/.env + ENV-FILES/jobbot-analyze.env (same as jobbot-daily).
 TOKEN="${TELEGRAM_TECH_BOT_TOKEN:-}"; CHAT="${TELEGRAM_TECH_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}"
+if [ -z "$CHAT" ] && [ -n "${SUPABASE_URL:-}" ] && [ -n "${SUPABASE_SERVICE_KEY:-}" ]; then
+  # neither env file carries a chat id; the analyzer sends tech messages to the
+  # owner's own telegram_chat_id — do the same
+  CHAT=$(curl -s -m 15 "${SUPABASE_URL}/rest/v1/user_settings?select=telegram_chat_id&user_id=eq.${JOBBOT_OWNER_USER_ID:-f92ee73e-786a-4990-b434-23f67203eb53}"     -H "apikey: ${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" | sed -n 's/.*"telegram_chat_id":"\{0,1\}\([0-9-]*\).*/\1/p')
+fi
 if true; then
   if [ -n "$TOKEN" ] && [ -n "$CHAT" ]; then
     curl -s -m 15 "https://api.telegram.org/bot${TOKEN}/sendMessage" \

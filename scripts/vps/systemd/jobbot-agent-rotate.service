@@ -7,4 +7,4 @@ Type=oneshot
 User=stuar
 EnvironmentFile=-/home/stuar/Projects/ENV-FILES/jobbot-analyze.env
 EnvironmentFile=-/home/stuar/Projects/Jobbot-NO/worker/.env
-ExecStart=/home/stuar/Projects/Jobbot-NO/scripts/vps/jobbot-agent-rotate.sh
+ExecStart=/bin/bash /home/stuar/Projects/Jobbot-NO/scripts/vps/jobbot-agent-rotate.sh
