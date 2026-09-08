@@ -787,6 +787,14 @@ def main() -> None:
     promoted = promote_ready(db, args.dry_run)
     if promoted:
         print(f"queued for filling: {promoted}")
+        if not args.dry_run:
+            # Owner rule (2026-09-08): a row entering the fill queue wakes the
+            # agent now; the 30-minute poller is only the safety net.
+            try:
+                from agent_wake import enqueue
+                print(f"agent wake: {enqueue(f'resolver promoted {promoted}')}")
+            except Exception as e:  # never let the wake break the resolver
+                print(f"agent wake failed: {e!r}")
 
     skipped = sweep_stale(db, args.dry_run, args.skip_after_hours)
     if skipped:

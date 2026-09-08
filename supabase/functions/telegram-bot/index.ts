@@ -183,6 +183,30 @@ function formatUptime(startDate: Date): string {
 }
 
 // --- HELPER: Send Message ---
+// Event-driven wake of the fill agent (owner rule 2026-09-08: a button press
+// starts the work now, not on the next poll). The bridge is worker/agent_wake.py
+// --serve on the VPS host; a missing URL or a dead bridge only means the
+// 30-minute poller picks the row up instead — the button itself never fails on it.
+async function wakeAgent(reason: string) {
+  const url = Deno.env.get('AGENT_WAKE_URL');
+  const secret = Deno.env.get('AGENT_WAKE_SECRET');
+  if (!url || !secret) return;
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 3000);
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'X-Wake-Secret': secret, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+      signal: ctl.signal,
+    });
+    clearTimeout(timer);
+    console.log(`[wake] ${reason} -> ${r.status}`);
+  } catch (e) {
+    console.warn(`[wake] ${reason} failed: ${(e as Error).message}`);
+  }
+}
+
 async function sendTelegram(chatId: string, text: string, replyMarkup?: any) {
   console.log(`📤 [TG] Sending to ${chatId}: ${text.substring(0, 50)}...`);
 
@@ -369,6 +393,7 @@ async function runBackgroundJob(update: any) {
                     await sendTelegram(chatId,
                         `✅ <b>Прийнято в чергу.</b>\nАгент напише Søknad і надішле сюди на перегляд ДО відправки роботодавцю, потім заповнить форму і покаже фінальне підтвердження перед сабмітом.${posMsg}`
                     );
+                    await wakeAgent('confirm_job');
                 } catch (err: any) {
                     console.error(`[TG] confirm_job_ exception:`, err);
                     await sendTelegram(chatId, `❌ Виняток: ${err.message || 'Unknown error'}`);
@@ -955,6 +980,7 @@ async function runBackgroundJob(update: any) {
                         `✅ <b>Підтверджено!</b>\n\n` +
                         `⏳ Заявка в черзі на заповнення, повідомлю після відправки.`
                     );
+                    await wakeAgent('confirm_apply');
                 } catch (e: any) {
                     console.error('Confirm exception:', e);
                     await sendTelegram(chatId, `❌ Помилка: ${e.message}`);
