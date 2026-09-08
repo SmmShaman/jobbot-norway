@@ -1,0 +1,10 @@
+[Unit]
+Description=JobBot fill agent — rotate the conversation before it outgrows the context window
+After=docker.service
+
+[Service]
+Type=oneshot
+User=stuar
+EnvironmentFile=-/home/stuar/Projects/ENV-FILES/jobbot-analyze.env
+EnvironmentFile=-/home/stuar/Projects/Jobbot-NO/worker/.env
+ExecStart=/home/stuar/Projects/Jobbot-NO/scripts/vps/jobbot-agent-rotate.sh

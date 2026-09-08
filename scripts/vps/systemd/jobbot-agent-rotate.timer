@@ -1,0 +1,9 @@
+[Unit]
+Description=Every 5 min (offset 2): rotate the JobBot agent conversation when its tail > 0.25 MB and the agent is idle
+
+[Timer]
+OnCalendar=*-*-* *:02,07,12,17,22,27,32,37,42,47,52,57:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target
