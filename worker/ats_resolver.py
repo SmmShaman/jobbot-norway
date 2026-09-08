@@ -54,6 +54,7 @@ from pathlib import Path
 import httpx
 from bs4 import BeautifulSoup
 
+from platforms import probe
 from linkedin_guest import (
     FORM_CLOSED, FORM_EASY_APPLY, GUEST_HEADERS,
     apply_url_from_text, classify_guest_page, company_website_from_guest_page,
@@ -631,21 +632,48 @@ def promote_ready(db: Supa, dry_run: bool) -> int:
     """
     rows = db.get(
         "applications",
-        select="id,jobs!inner(id,external_apply_url)",
+        select="id,skyvern_metadata,jobs!inner(id,external_apply_url)",
         user_id=f"eq.{OWNER_USER_ID}",
         status="eq.pending_manual",
         order="created_at.asc",
         **{"jobs.external_apply_url": "not.is.null"},
     )
+    promoted = 0
+    client = httpx.Client(follow_redirects=True)
     for r in rows:
-        print(f"  queue {r['id'][:8]} -> sending  ({(r.get('jobs') or {}).get('external_apply_url', '')[:60]})")
+        url = (r.get("jobs") or {}).get("external_apply_url", "") or ""
+        # Owner's rule (2026-09-08): know the platform BEFORE anyone spends tokens on
+        # it. One GET here decides ready / unknown / blocked / dead; the verdict is
+        # merged into skyvern_metadata.platform (the gate reads cache_dir from it,
+        # the agent reads captcha_suspected). Blocked and dead rows never reach the
+        # agent — they go to manual_review with the reason, like an agent verdict.
+        verdict = probe(url, client)
+        meta = dict(r.get("skyvern_metadata") or {})
+        meta["platform"] = verdict
+        tag = f"{verdict['status']}/{verdict.get('engine') or '?'}"
+        if verdict["cache_dir"]:
+            tag += f" via {verdict['cache_dir']}"
+        if verdict["status"] in ("blocked", "dead"):
+            print(f"  hold  {r['id'][:8]} -> manual_review  [{tag}] {verdict['reason']}  ({url[:50]})")
+            if not dry_run:
+                db.patch(
+                    "applications",
+                    {"status": "manual_review", "skyvern_metadata": meta,
+                     "error_message": f"platform: {verdict['status']} — {verdict['reason']}"},
+                    id=f"eq.{r['id']}",
+                )
+            continue
+        print(f"  queue {r['id'][:8]} -> sending  [{tag}] ({url[:60]})")
         if not dry_run:
             db.patch(
                 "applications",
-                {"status": "sending", "submission_method": "agent"},
+                {"status": "sending", "submission_method": "agent", "skyvern_metadata": meta},
                 id=f"eq.{r['id']}",
             )
-    return len(rows)
+        promoted += 1
+        time.sleep(1)
+    client.close()
+    return promoted
 
 
 def sweep_stale(db: Supa, dry_run: bool, hours: int) -> int:

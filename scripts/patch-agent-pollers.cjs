@@ -118,7 +118,7 @@ const DB_PATH =
 const FILL_SERIES = process.env.JOBBOT_FILL_SERIES || 'task-1784787379628-6jph2g';
 const MANUAL_SERIES = process.env.JOBBOT_MANUAL_SERIES || 'task-1784787352236-wrt8oh';
 
-const MARKER = 'POLICY v11 (2026-09-03)';
+const MARKER = 'POLICY v12 (2026-09-08)';
 
 // Two users are live in production. The agent is only allowed to write letters
 // and fill forms for Vitalii — Natalia's rows must go to manual_review by hand
@@ -239,7 +239,14 @@ const covers = (list, h) => !!h && list.some(d => {
 // A row is workable when the agent already has knowledge of its form host —
 // a script, or at least a recon map. Anything else would mean recon from zero,
 // which is the single most expensive thing the agent does.
-const ready = allFill.filter(r => covers(dirs, host((r.jobs || {}).external_apply_url)));
+// ${MARKER}: worker/platforms.py probes every row before it enters this queue and
+// stores skyvern_metadata.platform = {engine, status, cache_dir, captcha_suspected}.
+// cache_dir names the form-scripts dir that implements the same ENGINE (Teamtailor
+// at nofence.teamtailor.com -> karriere.frend.no), so a new employer host on a known
+// engine is ready without a recon. Host suffix match stays as the fallback.
+const platDir = r => (((r.skyvern_metadata || {}).platform || {}).cache_dir) || '';
+const knownDir = r => covers(dirs, host((r.jobs || {}).external_apply_url)) || dirs.includes(platDir(r));
+const ready = allFill.filter(knownDir);
 // ${MARKER}: NAV/FINN auto-queue (since v9), so a sending row does not prove
 // the owner saw it. Recon consent for an uncached platform comes from either
 // the card button (confirm_job_/allow_recon_ stamps owner_confirmed) or the
@@ -294,8 +301,9 @@ console.log(JSON.stringify({
     sending_to_fill: toFill,
     confirmed_to_submit: toSubmit,
     has_fill_script: toFill.length
-      ? covers(scripted, host((toFill[0].jobs || {}).external_apply_url))
+      ? (covers(scripted, host((toFill[0].jobs || {}).external_apply_url)) || scripted.includes(platDir(toFill[0])))
       : null,
+    platform_dir: toFill.length ? (platDir(toFill[0]) || null) : null,
     sent_today: sentToday,
     daily_cap: cap,
     daily_cap_reached: capReached,
@@ -368,6 +376,8 @@ ${TURN_BUDGET}
 - \`false\` — скрипта немає, але Є \`profile.json\` — карта форми з recon: підписи полів, кроки візарда, пастки. Заповнюй ЗА НЕЮ, а не з нуля, і до кінця ходу збережи \`fill.mjs\`, щоб наступного разу було \`true\`.
 
 Каталог named за хостом форми, і збіг перевіряється за суфіксом: \`ostre-toten.easycruit.com\` обслуговує профіль \`easycruit.com\` — у easycruit кожен роботодавець має свій піддомен, а рушій форми спільний. Не роби recon для нового піддомену знайомої платформи.
+
+🧭 РУШІЙ ВАЖЛИВІШИЙ ЗА ХОСТ (${MARKER}, правило власника 08.09: «спочатку визначити, чи відома платформа, чи є капча — потім заповнювати»). Ще до тебе \`worker/platforms.py\` перевірив цей рядок і записав вердикт у \`skyvern_metadata.platform\`: \`engine\` (teamtailor, reachmee, recman, workday…), \`status\`, \`captcha_suspected\`, \`cache_dir\`. Гейт віддає \`platform_dir\` — каталог у \`form-scripts/\`, що реалізує ТОЙ САМИЙ рушій (наприклад, \`nofence.teamtailor.com\` → \`karriere.frend.no\`). Якщо \`platform_dir\` заданий і не збігається з хостом: заповнюй ЙОГО \`fill.mjs\`/\`profile.json\` (селектори рушія спільні, лише entry URL і кастомні питання інші), НЕ роби recon з нуля; після успіху збережи копію (з правками, якщо були) у \`form-scripts/<новий хост>/\`, щоб наступного разу збіг був прямий. Якщо \`captcha_suspected: true\` — ПЕРШИМ ділом (до акаунта і заповнення) перевір, чи форма чи вхід гейтяться CAPTCHA/Turnstile; так → одразу \`manual_review\` з причиною, жодного токена на заповнення. Заблоковані (\`status: blocked\`) і мертві URL до тебе не доходять — вони вже в \`manual_review\` із причиною.
 
 Якщо для хоста в \`form-scripts/\` немає НІ скрипта, НІ \`profile.json\` — це нова платформа. Розвідай її В ЦЬОМУ Ж прогоні (recon коштує ~6,8M — тому за один прогін розбирай ОДНУ нову платформу) і, до завершення ходу, ОБОВʼЯЗКОВО збережи \`/workspace/agent/form-scripts/<хост>/profile.json\` і параметризований \`fill.mjs\`, перевіривши його повторним запуском. НІКОЛИ не лишай напрацьоване в \`/tmp\` — його стирає перезбірка контейнера (так згинули 58 скриптів за 22–27.07). Поля \`awaiting_recon_total\`/\`awaiting_recon_hosts\` — тепер лише лічильники ще не розібраних нових платформ у черзі, а \`recon_allowed\` — легасі-прапорець, на нього не зважай.
 

@@ -33,6 +33,7 @@ CARD_NOTIFY_MIN_BY_SOURCE = {
 TECH_REPORT_MIN_SCORE = int(os.getenv('TECH_REPORT_MIN_SCORE', '60'))
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from platforms import classify as classify_platform
 
 # Load .env for local development
 load_dotenv()
@@ -130,19 +131,23 @@ FORM_CACHE_DIR = '/home/stuar/nanoclaw-v2/groups/jobbot/form-scripts'
 
 
 def platform_cached(apply_url: Optional[str]) -> bool:
-    from urllib.parse import urlparse
+    """Engine-aware since 2026-09-08 (worker/platforms.py): a new employer host on a
+    known engine (Teamtailor, ReachMee, easycruit…) counts as cached, because the
+    agent reuses that engine's fill.mjs instead of a new recon."""
     try:
-        host = (urlparse(apply_url or '').hostname or '').removeprefix('www.')
+        return classify_platform(apply_url or '')['status'] == 'ready'
     except Exception:
         return False
-    if not host or not os.path.isdir(FORM_CACHE_DIR):
-        return False
-    for d in os.listdir(FORM_CACHE_DIR):
-        if not os.path.isdir(os.path.join(FORM_CACHE_DIR, d)):
-            continue
-        if host == d or host.endswith('.' + d):
-            return True
-    return False
+
+
+def platform_blocked(apply_url: Optional[str]) -> Optional[str]:
+    """Reason when the registry says the agent must never be woken for this form
+    (CAPTCHA at submit, LinkedIn-OAuth-only sign-up, e-mail-only…), else None."""
+    try:
+        v = classify_platform(apply_url or '')
+    except Exception:
+        return None
+    return v['reason'] if v['status'] == 'blocked' else None
 
 # Owner's order (2026-07-31): never apply to these companies, no matter the score.
 # Jobs are still analyzed and carded — only application creation is blocked.
@@ -860,6 +865,9 @@ async def send_job_card(
         'disable_web_page_preview': True,
     }
     card_source = (job.get('source') or '').upper()
+    if job.get('platform_block_reason'):
+        msg += f"\n\n⛔ <i>Лише вручну: {job['platform_block_reason']}</i>"
+        payload['text'] = msg
     if auto_app:
         msg += "\n\n🚀 <i>Вже в черзі на обробку.</i>"
         payload['text'] = msg
@@ -1147,6 +1155,12 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                         print(f"   🚫 Blocklisted company, no application ever: {job.get('company')} — {job['title'][:30]}")
                     elif has_no_form(job):
                         print(f"   ℹ️ no form ({job.get('application_form_type')}): {job['title'][:30]} — card only")
+                    elif platform_blocked(job.get('external_apply_url')):
+                        # Owner's rule (2026-09-08): know the platform before spending on it.
+                        # A form the agent can never submit gets no queue row — the card
+                        # carries the URL and the reason for a manual application.
+                        job['platform_block_reason'] = platform_blocked(job.get('external_apply_url'))
+                        print(f"   ⛔ blocked platform: {job['title'][:30]} — {job['platform_block_reason']}")
                     elif auto_soknad and result['score'] < auto_min and result['score'] >= min_score:
                         print(
                             f"   ⏭ {source or '?'} needs ≥{auto_min}: {job['title'][:30]} "
@@ -1187,6 +1201,7 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                             'company': job.get('company') or '?', 'title': job.get('title') or '?',
                             'queued': auto_app is not None, 'no_form': has_no_form(job),
                             'has_url': bool(job.get('external_apply_url')),
+                            'blocked': bool(job.get('platform_block_reason')),
                         })
 
                     total_analyzed += 1
@@ -1301,6 +1316,8 @@ def format_tech_report(total_analyzed: int, source_counts: dict, highlights: lis
             tag = "✍️ у черзі"
         elif h['no_form']:
             tag = "ℹ️ без форми"
+        elif h.get('blocked'):
+            tag = "⛔ лише вручну"
         elif h['has_url']:
             tag = "🔗 форма є"
         else:

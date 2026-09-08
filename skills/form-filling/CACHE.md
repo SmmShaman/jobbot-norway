@@ -126,3 +126,16 @@ to recon for this run and updates the profile.
 A profile is only worth writing if the next application on that host can run
 without a model in the loop. If the script needs the agent to look at a
 screenshot to work, it is not finished.
+
+## Engine aliases (2026-09-08)
+
+The directory is keyed by host, but the *engine* is what the script knows. Since
+2026-09-08 `worker/platforms.py` maps a form URL to its engine (Teamtailor,
+ReachMee, Recman, Workday, easycruit, Webcruiter, jobbnorge, Ashby, Lever…) and
+picks the cached dir that implements it (`ENGINES[engine]['dirs']`), storing the
+verdict in `applications.skyvern_metadata.platform` before the row enters the
+fill queue. The gate passes it as `platform_dir`; the agent fills with that dir's
+`fill.mjs` and saves a copy under the new host afterwards. Blocked hosts (CAPTCHA
+at submit, OAuth-only sign-up, e-mail-only) live in `platforms.BLOCKED` with the
+date they were learned — add to it whenever an agent run ends in `manual_review`
+for a reason that will not change.

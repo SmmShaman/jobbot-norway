@@ -95,7 +95,11 @@ STUCK_TIMEOUT_MINUTES = 30  # mark 'sending' applications as failed after this
 # means work in progress or a crashed run, never a human deliberating. 120 min
 # sits well above a normal fill (recon on a brand-new ATS can take ~15) while
 # still reclaiming a dead run the same hour.
-AGENT_STUCK_TIMEOUT_MINUTES = int(os.getenv("AGENT_STUCK_TIMEOUT_MINUTES", "120"))
+# 2026-09-08: 120 min was too short once the queue holds several rows — the agent
+# takes one row per wake and spent 12:30-16:00 on Ashby + nuu.no on 07.09, so two
+# owner-confirmed NAV rows were shoved into manual_review before their turn.
+# 480 min keeps a crashed run reclaimable the same day without emptying the queue.
+AGENT_STUCK_TIMEOUT_MINUTES = int(os.getenv("AGENT_STUCK_TIMEOUT_MINUTES", "480"))
 CLEANUP_EVERY_N_CYCLES = 30  # run cleanup every N poll cycles (~5 min at 10s interval)
 MAX_CONCURRENT_USERS = int(os.getenv("MAX_CONCURRENT_USERS", "3"))
 RETRY_ATTEMPTS = 3
