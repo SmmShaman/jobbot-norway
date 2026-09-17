@@ -168,7 +168,7 @@ of this skill as the Playwright mechanics.
    safety and cost real money. Do **not** create an `application_confirmations`
    row, do **not** send inline buttons, do **not** wait for anything.
 6. **Final screenshot + status update** — capture a downscaled screenshot
-   confirming submission, set `applications.status = 'sent'`.
+   confirming submission, set `applications.status = 'sent'` **and `sent_at = now()`** (a DB trigger also stamps `sent_at` when it is left NULL — 2026-09-17 — but set it explicitly: /navreport and the daily stats filter on it).
 7. **Tell the user after the fact — in the tech bot.** Send the post-submit
    screenshot plus the field→value list from phase 4 to
    `TELEGRAM_TECH_BOT_TOKEN` (`@vitalljobtechbot`) **with no buttons**. This is
@@ -252,7 +252,7 @@ the primary mechanism.
 A `schedule_task` poller (script-gated, empty-queue-safe) checks for
 `applications` rows matching the trigger above and wakes the agent when one
 exists. On wake: pick up the row, run phases 1-8 above, and on success set
-`status = 'sent'` (or `manual_review` on any failure/gotcha per phase 8) — do
+`status = 'sent'` + `sent_at` (or `manual_review` on any failure/gotcha per phase 8) — do
 not touch `submission_method` after that, it's a historical marker, not a
 live state field.
 
