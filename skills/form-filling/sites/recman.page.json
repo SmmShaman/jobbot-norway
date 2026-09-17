@@ -54,6 +54,18 @@
           "type": "maskedPhone",
           "example": "pressSequentially('4792564334') -> renders as '+47 92564334'",
           "gotcha": "the .ApplyV2InputPhone__fields__select country dropdown (list items show English country names, e.g. 'Norway' not 'Norge') has ZERO effect on the actual value. The mask infers the calling code from the first digits typed. Ignore the dropdown entirely; type calling code + national number as one digit string directly into the number field."
+        },
+        {
+          "label": "Fødselsdato* (DD / Måned / ÅÅÅÅ)",
+          "selector": "[name=\"dateOfBirth.day\"], [name=\"dateOfBirth.month\"], [name=\"dateOfBirth.year\"]",
+          "type": "select",
+          "gotcha": "3 separate <select>-like dropdowns despite looking like text fields in some renders; month is Norwegian month name not a number (e.g. select by visible label matching the numeric month, or map 1-12 to Norwegian month names). Required — confirmed blocks Neste when empty."
+        },
+        {
+          "label": "Adresse* (react-select-style autocomplete)",
+          "selector": "#address",
+          "type": "addressAutocomplete",
+          "gotcha": "Not always required to type manually — occasionally arrives pre-resolved (single-value div .ApplyV2AddressSelect__input__single-value already showing an address) before any interaction, likely from the platform's own CV-derived or stored-candidate autofill; check for that div first and skip if already populated. If empty, type the street+postal+city and wait for it to resolve into that single-value div; do not re-click #address afterwards, the resolved div intercepts pointer events on the original input."
         }
       ],
       "advanceButton": {
@@ -99,6 +111,12 @@
     "jobId": "1396f6a9-3c1a-4ba6-843f-12908b33c98b",
     "result": "Phase 1 (fill-only, no submit) completed successfully: CV uploaded, profile fields filled, phone rendered correctly as +47 92564334, custom question answered, cover letter filled at 1221/1500 chars. Submit button 'Søk' was NOT clicked."
   },
+  "verifiedRun2": {
+    "date": "2026-09-17",
+    "applicationId": "e3603a59-2bf9-4db5-829c-7f299832c488",
+    "jobId": "2c798f7f-1f35-46b7-b388-5cb301a7a986",
+    "result": "FULL submit succeeded (sub_id 801, same employer as verifiedRun — repost of the same 'Salgskonsulent B2B og B2C' posting). Site returned 'Vellykket!'. Two bugs found and fixed in fill.mjs during this run: (1) fillContentEditable()'s pressSequentially had no timeout override — typing a 1303-char letter into the React contenteditable Søknadsbrev field (which re-renders a live char counter on every keystroke) exceeded Playwright's default 30s action timeout; fixed by adding {timeout: 120000} to the pressSequentially call. (2) The final submit click used getByRole('button', {name: 'Søk'}) without exact:true, which matched BOTH the real submit button and the 'Gjennomgå og søk' nav-tab button (substring match) — strict-mode violation; fixed by adding exact:true. Both fixes are live in this fill.mjs as of 2026-09-17."
+  },
   "strategy": "account",
   "requiresAccount": "per-employer",
   "hasGuestApply": true,
@@ -111,8 +129,10 @@
     "reset": "/forgot-password: 4 steps — e-mail + «Send kode» (api/reset-password/init) → one-time code by mail from reset@recman.io, valid 300 s (api/reset-password/validate) → password + repeatPassword (api/reset-password/reset) → done",
     "walledEmployers": {
       "801": "Karrieresenteret AS / Din salgskonsulent AS (guest apply 2026-07-18 created the account)",
-      "2420": "Emera Rekruttering"
+      "2420": "Emera Rekruttering",
+      "1266": "Emera Rekruttering (same recruiting agency as 2420, separate sub_id — confirmed independently walled 2026-09-04: e-mail stuardaukro@gmail.com already registered in this employer's candidate DB, login page carries reCAPTCHA Enterprise -> account.mode='captcha' -> manual_review, application df97592d.../60d645a2... ØVERAASEN AS)"
     },
-    "ownerMailbox2026_09_03": "Applicant e-mail is now stuardaukro@gmail.com: on sub_id 801 (Karrieresenteret) the guest wizard ran to the letter step with NO wall (measured 03.09, submit:false). The bmw walls above are legacy. Profil fields differ per employer (801 asks only name/e-mail/phone) — fill.mjs fills what exists."
+    "ownerMailbox2026_09_03": "Applicant e-mail is now stuardaukro@gmail.com: on sub_id 801 (Karrieresenteret) the guest wizard ran to the letter step with NO wall (measured 03.09, submit:false). The bmw walls above are legacy. Profil fields differ per employer (801 asks only name/e-mail/phone) — fill.mjs fills what exists.",
+    "gotcha2026_09_04": "Emera Rekruttering's white-label job page (emera-rekruttering.recman.page) repeats the phrase \"Søk nå\" inside the job description body copy (e.g. \"Søk nå og bli en viktig del av ...!\"), which is a <p> appearing before the real button in DOM order — entryFlow's getByText('Søk nå').first() clicked that paragraph instead and silently did nothing (input[type=file] never appeared, 15s timeout). Fixed in fill.mjs: try getByRole('button', {name:'Søk nå'}) first, fall back to the old getByText selector only if no button role match exists."
   }
 }

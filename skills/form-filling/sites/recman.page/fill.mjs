@@ -27,7 +27,10 @@ async function fillContentEditable(page, locator, text) {
   await locator.click();
   await page.keyboard.press('Control+A');
   await page.keyboard.press('Delete');
-  await locator.pressSequentially(text, { delay: 3 });
+  // Long cover letters (1000+ chars) into this React contenteditable
+  // (live char-counter re-renders on every keystroke) can blow past
+  // Playwright's default 30s action timeout even at delay:3 — give it room.
+  await locator.pressSequentially(text, { delay: 3, timeout: 120000 });
 }
 
 function employerScope(applyUrl) {
@@ -193,7 +196,17 @@ async function main() {
       await page.getByText('Aksepter alle', { exact: false }).click({ timeout: 5000 });
     } catch { /* banner not present on this load */ }
 
-    await page.getByText('Søk nå', { exact: false }).first().click({ timeout: 15000 });
+    // Some employer pages repeat the phrase "Søk nå" inside the job
+    // description body (e.g. "Søk nå og bli en viktig del av ...!"), which is
+    // a <p>, not the actual button — getByText().first() can match that
+    // paragraph instead of the real control. getByRole scopes to the actual
+    // <button>.
+    const applyButton = page.getByRole('button', { name: 'Søk nå' });
+    if (await applyButton.count()) {
+      await applyButton.first().click({ timeout: 15000 });
+    } else {
+      await page.getByText('Søk nå', { exact: false }).first().click({ timeout: 15000 });
+    }
 
     // Step 1: Last opp CV — the native input is visually hidden behind a styled
     // uploader button, so wait for it merely attached, not visible.
@@ -311,7 +324,9 @@ async function main() {
     result.screenshot = screenshotPath;
 
     if (result.required_missing.length === 0 && submit) {
-      await page.getByRole('button', { name: 'Søk' }).click();
+      // exact:true — the "Gjennomgå og søk" nav-tab button also matches the
+      // substring "Søk" and getByRole resolves both without it.
+      await page.getByRole('button', { name: 'Søk', exact: true }).click();
       await page.waitForTimeout(2000);
       result.submitted = true;
       const afterSubmitPath = path.join(outDir, 'submitted.png');
