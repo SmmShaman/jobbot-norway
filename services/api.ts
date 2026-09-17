@@ -160,6 +160,7 @@ const mapJob = (job: any): Job => {
         application_id: job.application_id,
         application_status: job.application_status || undefined,
         application_sent_at: job.application_sent_at || undefined,
+        application_error: job.application_error || undefined,
         cover_letter_no: job.cover_letter_no || undefined,
         cover_letter_uk: job.cover_letter_uk || undefined,
         cost_usd: job.cost_usd,
@@ -306,7 +307,7 @@ export const api = {
       for (let page = 0; page < 20; page++) { // safety: max 20k jobs
         let query = supabase
           .from('jobs')
-          .select('*, applications(id, status, sent_at, cover_letter_no, cover_letter_uk)')
+          .select('*, applications(id, status, sent_at, error_message, cover_letter_no, cover_letter_uk)')
           .eq('user_id', user.id)
           .order('created_at', { ascending: false })
           .limit(PAGE_SIZE);
@@ -364,6 +365,7 @@ export const api = {
           application_id: app?.id || null,
           application_status: app?.status || null,
           application_sent_at: app?.sent_at || null,
+          application_error: app?.error_message || null,
           cover_letter_no: app?.cover_letter_no || null,
           cover_letter_uk: app?.cover_letter_uk || null
         });

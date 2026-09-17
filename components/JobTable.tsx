@@ -1659,6 +1659,18 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
                           <span className="inline-flex items-center justify-center px-2 py-1 rounded-full bg-blue-500 text-white text-xs font-bold" title="Затверджено, готово до відправки">
                             ✓
                           </span>
+                        ) : job.application_status === 'manual_review' ? (
+                          <span className="inline-flex items-center justify-center px-2 py-1 rounded-full bg-orange-500 text-white text-xs font-bold" title={`Ручний розгляд: агент зупинився${job.application_error ? ' — ' + job.application_error : ''}`}>
+                            🖐
+                          </span>
+                        ) : job.application_status === 'rejected' ? (
+                          <span className="inline-flex items-center justify-center px-2 py-1 rounded-full bg-slate-600 text-white text-xs font-bold" title={`Відхилено${job.application_error ? ': ' + job.application_error : ''}`}>
+                            🚫
+                          </span>
+                        ) : job.application_status === 'pending_manual' ? (
+                          <span className="inline-flex items-center justify-center px-2 py-1 rounded-full bg-amber-300 text-amber-900 text-xs font-bold" title="Очікує вашого підтвердження в Telegram">
+                            🕓
+                          </span>
                         ) : (
                           <span className="inline-flex items-center justify-center px-2 py-1 rounded-full bg-slate-400 text-white text-xs font-bold" title="Чернетка">
                             📝
@@ -1826,6 +1838,14 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
                               ) : job.application_status === 'failed' ? (
                                   <span className="text-[10px] px-1.5 py-0.5 rounded uppercase font-bold border border-red-300 bg-red-50 text-red-600 flex items-center gap-1 w-fit">
                                       ❌ Помилка
+                                  </span>
+                              ) : job.application_status === 'manual_review' ? (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded uppercase font-bold border border-orange-300 bg-orange-50 text-orange-700 flex items-center gap-1 w-fit" title={job.application_error || ''}>
+                                      🖐 Ручний розгляд
+                                  </span>
+                              ) : job.application_status === 'rejected' ? (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded uppercase font-bold border border-slate-300 bg-slate-100 text-slate-600 flex items-center gap-1 w-fit" title={job.application_error || ''}>
+                                      🚫 Відхилено
                                   </span>
                               ) : (
                                   <span className="text-[10px] px-1.5 py-0.5 rounded uppercase font-bold border border-green-300 bg-green-50 text-green-600 flex items-center gap-1 w-fit">

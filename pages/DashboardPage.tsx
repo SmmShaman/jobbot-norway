@@ -266,6 +266,15 @@ export const DashboardPage: React.FC = () => {
     return days.map(dateObj => {
       const dateStr = dateObj.toISOString().split('T')[0];
       const dayJobs = allJobs.filter(j => (j.scannedAt || j.postedDate).startsWith(dateStr));
+      // "Applied" is counted on the day the application was actually SENT — a job
+      // found on the 16th and submitted on the 17th belongs to the 17th here
+      // (2026-09-17: the owner looked for "today's" sends under today's bar).
+      // Jobs sent without a timestamp fall back to their discovery day.
+      const sentOnDay = (j: Job) => {
+        if (j.status !== 'APPLIED' && j.status !== 'SENT') return false;
+        const when = j.application_sent_at || j.scannedAt || j.postedDate;
+        return when.startsWith(dateStr);
+      };
 
       return {
         name: dateFormatter.format(dateObj),
@@ -273,7 +282,7 @@ export const DashboardPage: React.FC = () => {
         New: dayJobs.filter(j => !j.status || j.status === 'NEW').length,
         Analyzed: dayJobs.filter(j => j.status === 'ANALYZED').length,
         SoknadReady: dayJobs.filter(j => j.application_id && j.status !== 'APPLIED' && j.status !== 'SENT').length,
-        Applied: dayJobs.filter(j => j.status === 'APPLIED' || j.status === 'SENT').length,
+        Applied: allJobs.filter(sentOnDay).length,
       };
     });
   }, [allJobs, startDate, endDate, language]);

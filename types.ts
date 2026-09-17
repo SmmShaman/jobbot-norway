@@ -36,8 +36,9 @@ export interface Job {
   ai_recommendation?: string; // Analysis text
   tasks_summary?: string; // Specific duties list
   application_id?: string; // Link to the generated application if exists
-  application_status?: 'draft' | 'approved' | 'sending' | 'manual_review' | 'sent' | 'failed' | 'rejected'; // Status of the application
+  application_status?: 'draft' | 'approved' | 'sending' | 'manual_review' | 'pending_manual' | 'sent' | 'failed' | 'rejected'; // Status of the application
   application_sent_at?: string; // When the application was sent
+  application_error?: string; // Why the agent stopped (manual_review / failed reason)
   cover_letter_no?: string; // Norwegian cover letter text
   cover_letter_uk?: string; // Ukrainian cover letter text
   cost_usd?: number; // Cost of analysis
