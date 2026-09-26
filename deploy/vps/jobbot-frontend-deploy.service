@@ -1,0 +1,6 @@
+[Unit]
+Description=Pull the newest job.vitalii.no build from GitHub Actions
+
+[Service]
+Type=oneshot
+ExecStart=/opt/static-sites/deploy-static.sh SmmShaman/jobbot-norway build-frontend.yml site-dist job.vitalii.no

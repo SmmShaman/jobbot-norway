@@ -1,0 +1,58 @@
+name: Build frontend for VPS
+
+# job.vitalii.no is served from the Contabo VPS since 2026-09-26 (Netlify Free
+# blocked the whole account). This job only builds; the VPS pulls the artifact
+# itself (deploy/vps/deploy-static.sh via jobbot-frontend-deploy.timer).
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'worker/**'
+      - 'supabase/**'
+      - 'scripts/**'
+      - 'docs/**'
+      - 'database/**'
+      - 'skills/**'
+      - 'jobbot-transfer/**'
+      - 'promo/**'
+      - '**.md'
+  workflow_dispatch:
+
+concurrency:
+  group: build-frontend
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+
+      - name: Package
+        run: tar -czf site.tar.gz -C dist . && ls -lh site.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-dist
+          path: site.tar.gz
+          retention-days: 5
