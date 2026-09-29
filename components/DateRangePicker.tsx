@@ -96,7 +96,7 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
   ];
 
   return (
-    <div className="absolute top-full right-0 mt-1 bg-white rounded-lg shadow-xl border z-50 p-3 min-w-[300px]">
+    <div className="absolute top-full left-0 md:left-auto md:right-0 mt-1 bg-white rounded-lg shadow-xl border z-50 p-3 min-w-[300px] max-w-[calc(100vw-2rem)]">
       {/* Quick Select Buttons */}
       <div className="flex gap-2 mb-3 pb-3 border-b">
         {quickOptions.map((opt) => (

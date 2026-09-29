@@ -1162,7 +1162,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
                                 placeholder="Пароль"
                                 value={newCredPassword}
                                 onChange={e => setNewCredPassword(e.target.value)}
-                                className="flex-1 p-2.5 border border-slate-300 rounded-lg text-sm font-mono"
+                                className="flex-1 min-w-0 p-2.5 border border-slate-300 rounded-lg text-sm font-mono"
                             />
                             <button
                                 onClick={saveNewCredential}

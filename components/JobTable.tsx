@@ -1,5 +1,6 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { HelpTip } from './HelpTip';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Job, Application, JobTableExportInfo } from '../types';
 import { ExternalLink, MapPin, Building, ChevronDown, ChevronUp, FileText, Bot, Loader2, CheckSquare, Square, Sparkles, Download, AlertCircle, PenTool, Calendar, RefreshCw, X, CheckCircle, Rocket, Eye, EyeOff, ListChecks, DollarSign, Smartphone, RotateCw, Shield, Flame, Zap, StopCircle, Copy, Check, Brain, HelpCircle } from 'lucide-react';
@@ -17,16 +18,6 @@ interface JobTableProps {
   onToggleExportColumn?: (key: string) => void;
   initialExpandedJobId?: string;
 }
-
-const HelpTip: React.FC<{ text: string }> = ({ text }) => (
-  <span className="relative group inline-flex items-center">
-    <HelpCircle size={14} className="text-slate-400 hover:text-blue-500 cursor-help transition-colors" />
-    <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 text-xs text-white bg-slate-800 rounded-lg shadow-lg whitespace-nowrap hidden group-hover:block z-50 max-w-xs text-center">
-      {text}
-      <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
-    </span>
-  </span>
-);
 
 export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarCollapsed, onExportInfoChange, exportColumns, onToggleExportColumn, initialExpandedJobId }) => {
   const navigate = useNavigate();
@@ -1443,7 +1434,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
             </select>
         </div>
 
-        <div className="flex items-center gap-2 pl-0 md:pl-3 md:border-l border-slate-200 justify-between md:justify-start w-full md:w-auto">
+        <div className="flex flex-wrap items-center gap-2 pl-0 md:pl-3 md:border-l border-slate-200 justify-start w-full md:w-auto">
           {selectedIds.size > 0 ? (
             <>
               <button
