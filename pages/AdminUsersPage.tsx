@@ -80,16 +80,16 @@ export const AdminUsersPage: React.FC = () => {
 
   return (
     <div className="max-w-6xl mx-auto animate-fade-in">
-      <div className="flex justify-between items-center mb-6">
-        <div>
+      <div className="flex flex-wrap justify-between items-center gap-3 mb-6">
+        <div className="min-w-0">
           <h2 className="text-2xl font-bold text-slate-900 flex items-center gap-2"><ShieldAlert className="text-red-600" /> {t('admin.title')}</h2>
           <p className="text-slate-500">{t('admin.subtitle')}</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 shrink-0">
           <button onClick={fetchUsers} className="p-2 bg-white border rounded-lg hover:bg-slate-50 text-slate-600">
              <RefreshCw size={20} className={loading ? "animate-spin" : ""} />
           </button>
-          <button onClick={() => setIsCreating(!isCreating)} className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700">
+          <button onClick={() => setIsCreating(!isCreating)} className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 whitespace-nowrap hover:bg-blue-700">
              <Plus size={20} /> {t('admin.addUser')}
           </button>
         </div>
