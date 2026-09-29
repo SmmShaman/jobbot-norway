@@ -155,7 +155,7 @@ const COLUMN_STORAGE_KEY = 'jobbot-export-columns';
 const HelpTip: React.FC<{ text: string }> = ({ text }) => (
   <span className="relative group inline-flex items-center">
     <HelpCircle size={14} className="text-slate-400 hover:text-blue-500 cursor-help transition-colors" />
-    <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 text-xs text-white bg-slate-800 rounded-lg shadow-lg whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 max-w-xs text-center">
+    <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 text-xs text-white bg-slate-800 rounded-lg shadow-lg whitespace-nowrap hidden group-hover:block z-50 max-w-xs text-center">
       {text}
       <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
     </span>

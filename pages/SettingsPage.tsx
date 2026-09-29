@@ -725,7 +725,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
         <button
           key={tab.id}
           onClick={() => setActiveTab(tab.id)}
-          className={`flex items-center gap-2 px-6 py-3 border-b-2 font-medium text-sm whitespace-nowrap transition-colors ${
+          className={`flex items-center gap-2 px-4 md:px-6 py-3 border-b-2 font-medium text-sm whitespace-nowrap transition-colors ${
             activeTab === tab.id ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
         >
           <tab.icon size={16} /> {tab.label}
@@ -736,7 +736,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-200 min-h-[calc(100vh-100px)]">
-      <div className="p-6">
+      <div className="p-4 md:p-6">
         <h2 className="text-xl font-bold text-slate-900 mb-6">{t('settings.title')}</h2>
         {renderTabs()}
 
@@ -899,11 +899,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
               <div className="mt-12 pt-8 border-t">
                  <h3 className="font-bold mb-4">{t('settings.resume.savedProfiles')}</h3>
                  {isLoadingProfiles ? <Loader2 className="animate-spin" /> : profiles.map(p => (
-                    <div key={p.id} className={`p-4 mb-3 rounded-lg border flex justify-between items-center ${p.isActive ? 'bg-blue-50 border-blue-200' : 'bg-white hover:bg-slate-50'}`}>
-                       <div className="flex items-center gap-3">
-                           <div className={`p-2 rounded-full ${p.isActive ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-400'}`}><User size={20}/></div>
+                    <div key={p.id} className={`p-4 mb-3 rounded-lg border flex flex-col md:flex-row gap-3 md:justify-between md:items-center ${p.isActive ? 'bg-blue-50 border-blue-200' : 'bg-white hover:bg-slate-50'}`}>
+                       <div className="flex items-center gap-3 min-w-0">
+                           <div className={`p-2 rounded-full shrink-0 ${p.isActive ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-400'}`}><User size={20}/></div>
                            <div>
-                               <div className="font-medium text-slate-900 flex items-center gap-2">
+                               <div className="font-medium text-slate-900 flex flex-wrap items-center gap-x-2 gap-y-1">
                                    {p.name}
                                    {p.isActive && <span className="bg-blue-200 text-blue-800 text-[10px] px-2 py-0.5 rounded-full uppercase font-bold">{t('settings.resume.activeBadge')}</span>}
                                    {p.source_type === 'edited' ? (
@@ -918,7 +918,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
                                </div>
                            </div>
                        </div>
-                       <div className="flex gap-2">
+                       <div className="flex flex-wrap items-center gap-2 md:shrink-0">
                           {/* Source Files button */}
                           {p.sourceFiles && p.sourceFiles.length > 0 && (
                               <button
@@ -979,7 +979,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
                     <div key={idx} className="flex items-center gap-2 bg-white p-3 rounded-lg border border-slate-200 shadow-sm group">
                         <Globe size={16} className="text-slate-400"/>
                         <span className="flex-1 text-sm text-slate-600 truncate">{url}</span>
-                        <button onClick={() => removeUrl(idx)} className="text-slate-400 hover:text-red-500 p-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => removeUrl(idx)} className="text-slate-400 hover:text-red-500 p-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                             <Trash2 size={16}/>
                         </button>
                     </div>
@@ -1054,7 +1054,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab = 'resume
                                 <div key={idx} className="flex items-center gap-2 bg-white p-3 rounded-lg border border-purple-200 shadow-sm group">
                                     <Search size={16} className="text-purple-400"/>
                                     <span className="flex-1 text-sm text-slate-600">{term}</span>
-                                    <button onClick={() => { const t = [...linkedinTerms]; t.splice(idx, 1); setLinkedinTerms(t); }} className="text-slate-400 hover:text-red-500 p-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button onClick={() => { const t = [...linkedinTerms]; t.splice(idx, 1); setLinkedinTerms(t); }} className="text-slate-400 hover:text-red-500 p-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                                         <Trash2 size={16}/>
                                     </button>
                                 </div>

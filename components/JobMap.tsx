@@ -456,10 +456,12 @@ export const JobMap: React.FC<JobMapProps> = ({ jobs }) => {
 
     if (!mapRef.current || mapInstance.current) return;
     const center: [number, number] = [61.0, 10.0]; 
-    mapInstance.current = L.map(mapRef.current).setView(center, 6);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; OpenStreetMap',
-        subdomains: 'abcd',
+    // Zoom buttons sit bottom-right: the top-left corner holds the map title badge.
+    mapInstance.current = L.map(mapRef.current, { zoomControl: false }).setView(center, 6);
+    L.control.zoom({ position: 'bottomright' }).addTo(mapInstance.current);
+    // CARTO basemaps started returning an "API KEY REQUIRED" tile (2026-09), so use OSM's own tiles.
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
         maxZoom: 19
     }).addTo(mapInstance.current);
   }, []);
@@ -533,13 +535,13 @@ export const JobMap: React.FC<JobMapProps> = ({ jobs }) => {
         
         {/* Loading Indicator */}
         {isGeocoding && (
-            <div className="absolute top-4 right-4 z-[1000] bg-white/90 backdrop-blur px-3 py-1.5 rounded-full shadow-md border border-blue-100 flex items-center gap-2 text-xs font-bold text-blue-600 animate-fade-in">
+            <div className="absolute top-12 left-2 z-[1000] bg-white/90 backdrop-blur px-3 py-1.5 rounded-full shadow-md border border-blue-100 flex items-center gap-2 text-xs font-bold text-blue-600 animate-fade-in">
                 <Loader2 size={12} className="animate-spin" /> Looking up addresses...
             </div>
         )}
 
         {/* Legend */}
-        <div className="absolute bottom-4 left-4 bg-white/95 p-3 rounded-lg shadow-lg backdrop-blur-sm z-[1000] text-xs space-y-2 border border-slate-200 min-w-[120px]">
+        <div className="absolute bottom-6 left-2 md:bottom-4 md:left-4 bg-white/95 p-2 md:p-3 rounded-lg shadow-lg backdrop-blur-sm z-[1000] text-[11px] md:text-xs space-y-1 md:space-y-2 border border-slate-200 min-w-[110px]">
             <div className="font-bold text-slate-700 border-b border-slate-100 pb-1 mb-1">Status</div>
             <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-full bg-[#3b82f6] border-2 border-white shadow-sm"></span> {t('jobs.status.new')}</div>
             <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-full bg-[#a855f7] border-2 border-white shadow-sm"></span> {t('jobs.status.analyzed')}</div>

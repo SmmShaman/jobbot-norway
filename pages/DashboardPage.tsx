@@ -262,6 +262,7 @@ export const DashboardPage: React.FC = () => {
     // Localize date
     const locale = language === 'uk' ? 'uk-UA' : language === 'no' ? 'nb-NO' : 'en-US';
     const dateFormatter = new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'long' });
+    const shortFormatter = new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short' });
 
     return days.map(dateObj => {
       const dateStr = dateObj.toISOString().split('T')[0];
@@ -278,6 +279,7 @@ export const DashboardPage: React.FC = () => {
 
       return {
         name: dateFormatter.format(dateObj),
+        short: shortFormatter.format(dateObj),
         fullDate: dateStr,
         New: dayJobs.filter(j => !j.status || j.status === 'NEW').length,
         Analyzed: dayJobs.filter(j => j.status === 'ANALYZED').length,
@@ -303,9 +305,9 @@ export const DashboardPage: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 shrink-0">
         {/* Activity Chart - Expanded */}
         <div className="lg:col-span-3 bg-white p-3 rounded-xl border border-slate-200 shadow-sm h-[180px] flex flex-col">
-             <div className="flex justify-between items-center mb-1">
-                <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">{t('dashboard.activityStats')}</h3>
-                <div className="flex items-center gap-2 bg-slate-50 p-0.5 rounded border border-slate-100">
+             <div className="flex justify-between items-center gap-2 mb-1">
+                <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider truncate min-w-0">{t('dashboard.activityStats')}</h3>
+                <div className="flex items-center gap-1 md:gap-2 bg-slate-50 p-0.5 rounded border border-slate-100 shrink-0">
                     <input
                       type="date"
                       value={startDate}
@@ -327,9 +329,9 @@ export const DashboardPage: React.FC = () => {
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={chartData} margin={{ top: 5, right: 5, left: -25, bottom: 0 }} barSize={12}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748b', fontSize: 9}} interval={0} />
+                    <XAxis dataKey="short" axisLine={false} tickLine={false} tick={{fill: '#64748b', fontSize: 9}} interval="preserveStartEnd" minTickGap={4} />
                     <YAxis axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 9}} />
-                    <Tooltip cursor={{fill: '#f8fafc'}} contentStyle={{borderRadius: '6px', fontSize: '11px', padding: '4px'}} />
+                    <Tooltip labelFormatter={(_: any, p: any) => p?.[0]?.payload?.name ?? ''} cursor={{fill: '#f8fafc'}} contentStyle={{borderRadius: '6px', fontSize: '11px', padding: '4px'}} />
                     <Bar dataKey="New" stackId="a" fill="#3b82f6" name={t('jobs.status.new')} />
                     <Bar dataKey="Analyzed" stackId="a" fill="#a855f7" name={t('jobs.status.analyzed')} />
                     <Bar dataKey="SoknadReady" stackId="a" fill="#f97316" name={t('jobs.status.draft')} />
@@ -416,13 +418,13 @@ export const DashboardPage: React.FC = () => {
           />
         
           {/* NEW LOCATION: Sources (Compact) */}
-          <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm flex flex-col h-full">
+          <div className="col-span-2 lg:col-span-1 bg-white p-3 rounded-lg border border-slate-200 shadow-sm flex flex-col h-full">
               <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1"><Activity size={10} /> {t('dashboard.sources')}</h3>
               <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2 pr-1">
                   {sourceStats.map((source) => (
                   <div key={source.name} className="group">
                       <div className="flex justify-between items-end mb-0.5">
-                          <span className="text-[10px] font-semibold text-slate-600 truncate max-w-[60px]">{source.name}</span>
+                          <span className="text-[10px] font-semibold text-slate-600 truncate max-w-[120px] lg:max-w-[60px]">{source.name}</span>
                           <span className="text-[9px] text-slate-400 font-mono">{source.count}</span>
                       </div>
                       <div className="w-full bg-slate-100 rounded-full h-1 overflow-hidden">
@@ -436,16 +438,12 @@ export const DashboardPage: React.FC = () => {
       </div>
 
       {/* SECTION 3: MAP (Responsive Height + Flex Fill on Desktop) */}
-      <div className="w-full h-[350px] md:h-auto md:flex-1 bg-white rounded-xl border border-slate-200 shadow-sm p-1 relative z-0 min-h-[200px]">
+      <div className="w-full h-[440px] md:h-auto md:flex-1 bg-white rounded-xl border border-slate-200 shadow-sm p-1 relative z-0 min-h-[200px] flex flex-col md:block">
           
-          {/* Map Title Badge */}
-          <div className="absolute top-3 left-3 z-[1000] bg-white/90 px-3 py-1.5 rounded shadow-sm text-sm font-bold text-slate-700 border border-slate-200 backdrop-blur-sm flex items-center gap-2">
-             <MetricCardIcon size={14} className="text-blue-600"/> {t('dashboard.mapTitle')} <span className="bg-slate-100 px-1.5 rounded text-xs text-slate-500">{filteredMapJobs.length}</span>
-          </div>
 
           {/* NEW: Map Controls Overlay */}
-          <div className="absolute top-3 right-3 z-[1000] bg-white/95 rounded-lg shadow-lg border border-slate-200 backdrop-blur-md flex flex-col text-xs overflow-hidden">
-             <div className="bg-slate-50 px-3 py-1.5 border-b border-slate-200 font-bold text-slate-600 flex items-center gap-2">
+          <div className="order-first mb-1 md:mb-0 md:absolute md:top-3 md:right-3 z-[1000] bg-white/95 rounded-lg md:shadow-lg border border-slate-200 backdrop-blur-md flex flex-col text-xs overflow-hidden">
+             <div className="hidden md:flex bg-slate-50 px-3 py-1.5 border-b border-slate-200 font-bold text-slate-600 items-center gap-2">
                 <Filter size={12} /> {t('dashboard.map.filters')}
              </div>
              <div className="p-2 space-y-2">
@@ -465,7 +463,7 @@ export const DashboardPage: React.FC = () => {
                 </div>
                 
                 {/* Toggles */}
-                <div className="flex flex-col gap-1">
+                <div className="flex flex-wrap md:flex-col gap-1">
                    <button
                       onClick={() => { setMapShowOnlySent(!mapShowOnlySent); setMapCleared(false); setMapShowOnlyNewToday(false); }}
                       className={`flex items-center gap-2 px-2 py-1.5 rounded transition-colors ${mapShowOnlySent && !mapCleared ? 'bg-green-50 text-green-700 font-bold' : 'hover:bg-slate-50 text-slate-600'}`}
@@ -488,7 +486,13 @@ export const DashboardPage: React.FC = () => {
              </div>
           </div>
 
-          <JobMap jobs={filteredMapJobs} />
+          <div className="flex-1 min-h-0 md:h-full relative">
+              {/* Map Title Badge */}
+              <div className="absolute top-2 left-2 z-[1000] bg-white/90 px-3 py-1.5 rounded shadow-sm text-sm font-bold text-slate-700 border border-slate-200 backdrop-blur-sm flex items-center gap-2">
+                 <MetricCardIcon size={14} className="text-blue-600"/> {t('dashboard.mapTitle')} <span className="bg-slate-100 px-1.5 rounded text-xs text-slate-500">{filteredMapJobs.length}</span>
+              </div>
+              <JobMap jobs={filteredMapJobs} />
+          </div>
       </div>
 
     </div>

@@ -43,7 +43,10 @@ serve(async (req) => {
       global: { headers: { Authorization: authHeader } }
     });
 
-    const { data: { user }, error: userError } = await supabaseClient.auth.getUser();
+    // Pass the JWT explicitly: newer supabase-js getUser() without an argument looks for a
+    // stored session and fails with AuthSessionMissingError on a header-only client.
+    const jwt = authHeader.replace(/^Bearer\s+/i, '');
+    const { data: { user }, error: userError } = await supabaseClient.auth.getUser(jwt);
     if (userError || !user) {
       console.error('❌ Invalid user token:', userError);
       throw new Error('Invalid User Token');

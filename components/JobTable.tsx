@@ -21,7 +21,7 @@ interface JobTableProps {
 const HelpTip: React.FC<{ text: string }> = ({ text }) => (
   <span className="relative group inline-flex items-center">
     <HelpCircle size={14} className="text-slate-400 hover:text-blue-500 cursor-help transition-colors" />
-    <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 text-xs text-white bg-slate-800 rounded-lg shadow-lg whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 max-w-xs text-center">
+    <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 text-xs text-white bg-slate-800 rounded-lg shadow-lg whitespace-nowrap hidden group-hover:block z-50 max-w-xs text-center">
       {text}
       <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
     </span>
@@ -179,7 +179,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
 
     if (sourceUpper === 'FINN') {
       return (
-        <span className={`${badgeClasses} rounded font-bold bg-[#06bffc] text-white flex items-center gap-1`} title="FINN.no">
+        <span className={`${badgeClasses} rounded font-bold bg-[#06bffc] text-white inline-flex w-fit items-center gap-1`} title="FINN.no">
           <svg className={sizeClasses} viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
           </svg>
@@ -190,7 +190,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
 
     if (sourceUpper === 'NAV') {
       return (
-        <span className={`${badgeClasses} rounded font-bold bg-[#c30000] text-white flex items-center gap-1`} title="NAV / Arbeidsplassen">
+        <span className={`${badgeClasses} rounded font-bold bg-[#c30000] text-white inline-flex w-fit items-center gap-1`} title="NAV / Arbeidsplassen">
           <svg className={sizeClasses} viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/>
           </svg>
@@ -201,7 +201,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
 
     if (sourceUpper === 'LINKEDIN') {
       return (
-        <span className={`${badgeClasses} rounded font-bold bg-[#0a66c2] text-white flex items-center gap-1`} title="LinkedIn">
+        <span className={`${badgeClasses} rounded font-bold bg-[#0a66c2] text-white inline-flex w-fit items-center gap-1`} title="LinkedIn">
           <svg className={sizeClasses} viewBox="0 0 24 24" fill="currentColor">
             <path d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14m-.5 15.5v-5.3a3.26 3.26 0 0 0-3.26-3.26c-.85 0-1.84.52-2.32 1.3v-1.11h-2.79v8.37h2.79v-4.93c0-.77.62-1.4 1.39-1.4a1.4 1.4 0 0 1 1.4 1.4v4.93h2.79M6.88 8.56a1.68 1.68 0 0 0 1.68-1.68c0-.93-.75-1.69-1.68-1.69a1.69 1.69 0 0 0-1.69 1.69c0 .93.76 1.68 1.69 1.68m1.39 9.94v-8.37H5.5v8.37h2.77z"/>
           </svg>
@@ -1293,9 +1293,9 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
     <div className="space-y-4">
       {/* TOOLBAR */}
       <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row flex-wrap md:items-center gap-3">
-        <div className="flex-1 flex items-center gap-2 min-w-[200px]">
+        <div className="flex-1 flex flex-wrap items-center gap-2 min-w-0">
             {/* Company filter with exclusion dropdown */}
-            <div className="relative flex-1 hidden md:block" ref={companyDropdownRef}>
+            <div className="relative flex-1 hidden md:block md:min-w-[160px]" ref={companyDropdownRef}>
                 <Building className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
                 <input
                   type="text"
@@ -1355,7 +1355,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
                   </div>
                 )}
             </div>
-            <div className="relative flex-1 hidden md:block">
+            <div className="relative flex-1 hidden md:block md:min-w-[140px]">
                 <MapPin className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
                 <input type="text" placeholder={t('jobs.locationPlaceholder')} className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" value={filters.location} onChange={e => setFilters({...filters, location: e.target.value})} />
             </div>
@@ -1385,7 +1385,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
                 step="5"
                 value={filters.minScore}
                 onChange={e => setFilters({...filters, minScore: Number(e.target.value)})}
-                className="w-24 h-1.5 accent-purple-600 cursor-pointer"
+                className="w-20 md:w-24 h-1.5 accent-purple-600 cursor-pointer"
               />
               <span className={`text-xs font-bold min-w-[28px] ${filters.minScore >= 80 ? 'text-green-600' : filters.minScore >= 50 ? 'text-purple-600' : 'text-slate-500'}`}>
                 {filters.minScore}
@@ -1770,13 +1770,13 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onRefresh, setSidebarC
                       <div className="text-xs text-slate-600 mb-1 flex items-center gap-1">
                           <Building size={12} /> {job.company}
                       </div>
-                      <div className="flex items-center justify-between text-[11px] text-slate-400">
-                          <div className="flex items-center gap-2">
-                             <span className="flex items-center gap-0.5"><MapPin size={10}/> {job.location}</span>
+                      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-[11px] text-slate-400">
+                          <div className="flex items-center gap-2 min-w-0">
+                             <span className="flex items-center gap-0.5 min-w-0 truncate"><MapPin size={10} className="shrink-0"/> {job.location}</span>
                              <span>•</span>
                              {getSourceBadge(job.source, 'sm')}
                           </div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 ml-auto shrink-0">
                               <span>{job.postedDate}</span>
                               <a href={job.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-0.5 text-blue-600 hover:text-blue-800 text-xs font-medium"><ExternalLink size={12} /> Лінк</a>
                           </div>
