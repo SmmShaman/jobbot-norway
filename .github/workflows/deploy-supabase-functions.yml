@@ -1,11 +1,9 @@
 name: Deploy Supabase Edge Functions
 
+# Manual only. The managed Supabase project this targets was removed ("Resource has been
+# removed"), so every push under supabase/functions failed. Live functions are served by the
+# self-hosted stack on the VPS from ~/supabase-selfhost/volumes/functions (copied from the repo).
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'supabase/functions/**'
   workflow_dispatch:
 
 jobs:
