@@ -1,0 +1,11 @@
+[Unit]
+Description=Deploy JobBot Edge Functions from git to the self-hosted Supabase stack
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=stuar
+Group=stuar
+SupplementaryGroups=docker
+ExecStart=/usr/bin/flock -n /tmp/jobbot-functions-deploy.lock /home/stuar/Projects/Jobbot-NO/scripts/vps/jobbot-functions-deploy.sh
