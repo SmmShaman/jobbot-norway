@@ -561,30 +561,34 @@ def apply_linkedin_gate(score: int, source: str, content: dict, title: str, desc
 
 # Search tracks: nav_quota (NAV activity-report jobs, "can I do this") vs
 # career (leadership/IT jobs, "fit with leadership experience + company potential").
-# LinkedIn jobs are always career. NAV/FINN jobs are career only if a leadership or
-# IT signal is present in title+description, otherwise nav_quota by default.
-TRACK_LEADERSHIP_KEYWORDS = [
-    'leder', 'ledelse', 'daglig leder', 'avdelingsleder', 'teamleder', 'seksjonsleder',
-    'enhetsleder', 'driftsleder', 'styreleder', 'direktør', 'sjef', 'manager',
-    # Vitalii is an HK-dir approved teacher — leadership positions in education count
-    # as career, but a plain lærervikar (substitute teacher, no leadership) stays nav_quota.
-    'rektor', 'undervisningsinspektør', 'styrer barnehage', 'barnehagestyrer',
-]
-TRACK_IT_KEYWORDS = [
-    'it-', 'utvikler', 'developer', 'programmerer', 'systemutvikler', 'dataingeniør',
-    'devops', 'backend', 'frontend', 'fullstack', 'cloud engineer', 'it-konsulent',
-    'cto', 'tech lead',
-]
+# LinkedIn jobs are always career. NAV/FINN jobs are career only if the TITLE carries a
+# leadership or IT signal, otherwise nav_quota by default.
+#
+# Title only, and matched as word parts (2026-10-07): the old substring match over
+# title+description put 210 of 318 NAV jobs into career — "I KIWI er det kunden som er
+# sjefen" made a 60 % shop job career, "veileder" matched "leder", "it-" matched any
+# hyphenated word — and career is never auto-submitted, so those jobs stalled.
+# Norwegian compounds keep the role at the end (butikksjef, avdelingsleder,
+# systemutvikler), so suffix-style patterns catch them without the noise.
+# Vitalii is an HK-dir approved teacher — leadership in education counts as career,
+# but a plain lærervikar (no leadership) stays nav_quota.
+TRACK_LEADERSHIP_RE = re.compile(
+    r'(?<!vei)leder|ledelse|\blede\b|sjef\b|direktør|\bmanager\b|\bhead of\b|'
+    r'\brektor|undervisningsinspektør|barnehagestyrer|styrer barnehage'
+)
+TRACK_IT_RE = re.compile(
+    r'\bit\b|utvikler|developer|programmerer|dataingeniør|devops|backend|frontend|'
+    r'full ?stack|\bcto\b|tech lead|cloud engineer|software'
+)
 
 
 def classify_track(job: dict) -> str:
     """Classify a job into 'nav_quota' or 'career'. LinkedIn is always career;
-    NAV/FINN jobs are career only when a leadership/IT signal is present."""
+    NAV/FINN jobs are career only when the title carries a leadership/IT signal."""
     if (job.get('source') or '').upper() == 'LINKEDIN':
         return 'career'
-    haystack = f"{job.get('title', '')} {job.get('description', '')}".lower()
-    if any(kw in haystack for kw in TRACK_LEADERSHIP_KEYWORDS) or \
-       any(kw in haystack for kw in TRACK_IT_KEYWORDS):
+    title = (job.get('title') or '').lower()
+    if TRACK_LEADERSHIP_RE.search(title) or TRACK_IT_RE.search(title):
         return 'career'
     return 'nav_quota'
 

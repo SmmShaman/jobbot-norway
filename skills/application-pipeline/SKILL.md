@@ -99,18 +99,16 @@ the `/automode` bot command — never edited by hand in the DB.
 ### Classifier (`worker/analyze_worker.py::classify_track`)
 
 - LinkedIn source → always `career`.
-- Otherwise (NAV/FINN) → `career` only if title+description contains a
-  leadership keyword (`leder`, `daglig leder`, `avdelingsleder`, `teamleder`,
-  `direktør`, `sjef`, `manager`, plus education-leadership terms `rektor`,
-  `undervisningsinspektør`, `styrer barnehage`, `barnehagestyrer` — added
-  2026-07-19 because Vitalii is an HK-dir approved teacher, so
-  leadership-in-education counts as career even though a plain
-  `lærer`/`lærervikar` with no leadership signal stays `nav_quota`; the
-  kindergarten-director terms use the multi-word/compound form rather than
-  bare `styrer`, since that word alone is a common Norwegian verb — "manages/
-  steers" — and would false-positive on unrelated job text) or an IT keyword
-  (`utvikler`, `developer`, `devops`, `backend`, `cto`, etc.).
-  See `TRACK_LEADERSHIP_KEYWORDS`/`TRACK_IT_KEYWORDS` for the exact lists.
+- Otherwise (NAV/FINN) → `career` only if the **title** carries a leadership
+  signal (`…leder` but not `veileder`, `ledelse`, `lede`, `…sjef`, `direktør`,
+  `manager`, `head of`, plus education leadership `rektor`,
+  `undervisningsinspektør`, `barnehagestyrer` — Vitalii is an HK-dir approved
+  teacher, so a plain `lærer`/`lærervikar` stays `nav_quota`) or an IT signal
+  (`IT`, `…utvikler`, `developer`, `devops`, `backend`, `software`, `cto` …).
+  Title only, since 2026-10-07: the old substring match over title+description
+  put 210 of 318 NAV jobs into career (a KIWI ad saying "kunden er sjefen" made
+  a shop job career), and career is never auto-submitted. See
+  `TRACK_LEADERSHIP_RE`/`TRACK_IT_RE` for the exact patterns.
 - Default: `nav_quota`.
 
 ## Career-track scoring honesty calibration (added 2026-07-19)
