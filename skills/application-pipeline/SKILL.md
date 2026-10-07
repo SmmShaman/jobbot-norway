@@ -285,6 +285,11 @@ Rules enforced in the bot handler itself, not just by convention:
   per-request toggle: **career-track jobs are never auto-submitted**, only
   ever queued for manual approval, because they warrant the wide individual
   letter and human judgment on fit.
+- **Owner override (2026-10-07):** `applications.skyvern_metadata.owner_submit_override
+  = true` means the owner picked this exact row for submission. The agent submits it
+  even for `track='career'` or a 🚫/❗️ fit marker, reusing an existing
+  `cover_letter_no`. Only real form blockers (CAPTCHA, no IMAP, dead URL) still end
+  in `manual_review`. Set together with `owner_confirmed = true` (recon consent).
 - After any change, the bot replies with the current state of both tracks
   (including `daily_limit` if set) so the user always sees the full picture,
   not just the one track they touched.
