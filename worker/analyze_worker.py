@@ -10,6 +10,7 @@ Analyze Worker - аналізує вакансії через Groq API (llama-3.
 """
 
 import os
+import html
 import re
 import sys
 import json
@@ -158,6 +159,23 @@ COMPANY_BLOCKLIST = {'nammo'}
 def company_blocked(company: Optional[str]) -> bool:
     name = (company or '').lower()
     return any(blocked in name for blocked in COMPANY_BLOCKLIST)
+
+# Owner's rule (2026-10-07): a known mismatch is decided BEFORE any letter is written.
+# The scorer already marks the real obstacle in the cons — "🚫 Блокуюча вимога: …"
+# (vocational HARD REQUIREMENT GATE) or "❗️ …" (missing diploma, language level,
+# seniority) — but nothing read that marker, so such jobs were auto-queued anyway and
+# the agent filled the form and wrote the letter only to stop at manual_review
+# (Kongsberg 07.10, Gjøvik kommune 06.10). A marked job now gets a card with the
+# confirm button instead of a queue row: the owner can still override by hand.
+FIT_BLOCK_MARKERS = ('🚫', '❗')
+
+
+def fit_block_reason(analysis_text: Optional[str]) -> Optional[str]:
+    """The marked cons bullet when the analysis flags a hard mismatch, else None."""
+    for line in (analysis_text or '').splitlines():
+        if any(m in line for m in FIT_BLOCK_MARKERS):
+            return line.strip().lstrip('-•* ').strip()[:200]
+    return None
 
 # Language code to full name mapping (must match job-analyzer/index.ts)
 LANG_MAP = {
@@ -868,6 +886,9 @@ async def send_job_card(
     if job.get('platform_block_reason'):
         msg += f"\n\n⛔ <i>Лише вручну: {job['platform_block_reason']}</i>"
         payload['text'] = msg
+    if job.get('fit_block_reason'):
+        msg += f"\n\n🚫 <i>Авто-søknad не створено — невідповідність: {html.escape(job['fit_block_reason'])}</i>"
+        payload['text'] = msg
     if auto_app:
         msg += "\n\n🚀 <i>Вже в черзі на обробку.</i>"
         payload['text'] = msg
@@ -1161,6 +1182,9 @@ async def main(limit: int = 100, user_id: Optional[str] = None):
                         # carries the URL and the reason for a manual application.
                         job['platform_block_reason'] = platform_blocked(job.get('external_apply_url'))
                         print(f"   ⛔ blocked platform: {job['title'][:30]} — {job['platform_block_reason']}")
+                    elif auto_soknad and result['score'] >= auto_min and fit_block_reason(result.get('analysis')):
+                        job['fit_block_reason'] = fit_block_reason(result.get('analysis'))
+                        print(f"   🚫 mismatch, no auto-søknad: {job['title'][:30]} — {job['fit_block_reason'][:80]}")
                     elif auto_soknad and result['score'] < auto_min and result['score'] >= min_score:
                         print(
                             f"   ⏭ {source or '?'} needs ≥{auto_min}: {job['title'][:30]} "

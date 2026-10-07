@@ -139,6 +139,20 @@ of this skill as the Playwright mechanics.
    that kill a run — account wall, CAPTCHA, a hidden hard requirement, a dead
    URL — before any letter has been paid for.
 
+3a. **Fit check — before a single word of the letter (owner's rule,
+   2026-10-07).** If the posting or the form itself demands something the
+   profile does not have — a required degree/licence/authorisation, Norwegian
+   above B1 stated as a requirement («meget gode», «flytende», C1), a clearance
+   or citizenship, years of paid experience in that exact craft — stop here:
+   `manual_review` with the mismatch in `error_message`, **no letter**, no
+   further filling. Same for a row that can never be submitted by this run
+   anyway (career track) when such a mismatch exists: a letter for a job you
+   already know does not fit is pure cost. Exception: if the job's
+   `ai_recommendation` already carried a `🚫`/`❗️` line, the owner saw it on
+   the card and pressed «✅ Підтвердити» by hand — that is an override, write.
+   (Auto-queued rows never carry such a line: `analyze_worker.py`
+   `fit_block_reason` stops them before a queue row exists.)
+
 3b. **Write the letter — last, and only if the form asks for one.** Once every
    other field is filled and nothing is left to decide, look at what the form
    actually wants:
