@@ -482,16 +482,21 @@ def pick_jobs(db: Supa, limit: int, statuses: str) -> list[dict]:
         select="id,status,error_message,job_id,jobs!inner(id,title,company,location,description,job_url,source,application_form_type,external_apply_url)",
         user_id=f"eq.{OWNER_USER_ID}",
         status=f"in.({statuses})",
-        order="created_at.asc",
+        # Already-tried rows are excluded IN the query, newest first. Until 16.10.2026
+        # they were filtered after fetching the oldest limit*6 rows: once 48 old rows
+        # carried an "ats-resolver:" note the window held nothing else, every run said
+        # "candidates: 0" (last non-zero run 09.09) and each new row only waited 24h
+        # for the stale sweep — 41 LinkedIn rows were never searched at all.
+        order="created_at.desc",
         limit=str(limit * 6),
-        **{"jobs.external_apply_url": "is.null"},
+        **{
+            "jobs.external_apply_url": "is.null",
+            "or": "(error_message.is.null,error_message.not.like.ats-resolver:*)",
+        },
     )
     out, seen = [], set()
     for r in rows:
         job = r.get("jobs") or {}
-        note = r.get("error_message") or ""
-        if note.startswith("ats-resolver:"):  # already tried, do not pay twice
-            continue
         if job.get("id") in seen:
             continue
         seen.add(job["id"])

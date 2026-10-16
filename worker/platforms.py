@@ -100,6 +100,18 @@ BLOCKED: list[tuple[str, str, str]] = [
     ('app.vilect.com', '', 'e-mail-only "form", no web form (CACHE.md); e-mail applications are not automated'),
     ('nav.no', '', 'NAV page is the posting, not a form'),
     ('finn.no', '/job/apply', 'FINN Enkel søknad: account CAPTCHA-gated login (04.09.2026), strategy manual_review in finn.no profile'),
+    ('jobzone.no', '', 'JobZone: account creation behind invisible reCAPTCHA Enterprise before any field (16.10.2026)'),
+    ('karrieresenteret.recman.page', '', 'Recman Karrieresenteret/Din salgskonsulent (sub_id 801): account exists, login behind reCAPTCHA Enterprise (06.10 + 15.10.2026)'),
+]
+
+# Recman serves every employer from apply.recman.page and tells them apart only by the
+# sub_id query parameter, so a host/path rule cannot name one employer. An account per
+# employer is created on the first application; every later one needs a login, and
+# Recman's login is behind reCAPTCHA (see jobbot-account-flow). (host suffix, param,
+# value) -> reason.
+BLOCKED_QUERY: list[tuple[str, str, str, str]] = [
+    ('recman.page', 'sub_id', '801', 'Recman Karrieresenteret/Din salgskonsulent: account exists, login behind reCAPTCHA Enterprise (06.10 + 15.10.2026)'),
+    ('recman.page', 'sub_id', '1266', 'Recman Emera Rekruttering: account exists, login behind reCAPTCHA (04.09 + 17.09.2026)'),
 ]
 
 BOT_WALL_MARKERS = (
@@ -171,6 +183,10 @@ def blocked_reason(url: str) -> Optional[str]:
     for h, prefix, reason in BLOCKED:
         if _suffix(host, h) and (not prefix or path.startswith(prefix)):
             return reason
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(url or '').query)
+    for h, param, value, reason in BLOCKED_QUERY:
+        if _suffix(host, h) and value in query.get(param, []):
+            return reason
     return None
 
 
@@ -234,6 +250,12 @@ def probe(url: str, client: Optional[httpx.Client] = None, timeout: float = 25.0
         out.update({'status': 'blocked', 'reason': 'page offers only a mailto: link, no web form'})
         return out
     out['status'] = 'ready' if out['cache_dir'] else 'unknown'
+    # Owner's rule (16.10.2026): do not wake the agent to discover a CAPTCHA. On a
+    # known engine the flag is often harmless (5 of 9 such rows were sent), but on a
+    # platform with no fill script it has never ended in a submission (jobzone.no
+    # 16.10, 0 of 2) — the agent spent its run only to confirm the wall.
+    if out['status'] == 'unknown' and out['captcha_suspected']:
+        out.update({'status': 'blocked', 'reason': f'CAPTCHA script on {out["host"]}, a platform with no fill script yet — apply by hand'})
     return out
 
 
