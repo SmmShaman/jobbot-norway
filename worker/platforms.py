@@ -100,6 +100,7 @@ BLOCKED: list[tuple[str, str, str]] = [
     ('app.vilect.com', '', 'e-mail-only "form", no web form (CACHE.md); e-mail applications are not automated'),
     ('nav.no', '', 'NAV page is the posting, not a form'),
     ('finn.no', '/job/apply', 'FINN Enkel søknad: account CAPTCHA-gated login (04.09.2026), strategy manual_review in finn.no profile'),
+    ('smartrecruiters.com', '', 'SmartRecruiters oneclick apply: "Automated (bot) activity" wall on every tenant (04.10 + AFRY 16.10.2026)'),
     ('jobzone.no', '', 'JobZone: account creation behind invisible reCAPTCHA Enterprise before any field (16.10.2026)'),
     ('karrieresenteret.recman.page', '', 'Recman Karrieresenteret/Din salgskonsulent (sub_id 801): account exists, login behind reCAPTCHA Enterprise (06.10 + 15.10.2026)'),
 ]
